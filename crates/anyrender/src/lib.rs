@@ -21,6 +21,15 @@
 //!
 //! The [anyrender_svg](https://docs.rs/anyrender_svg) crate allows SVGs to be rendered using AnyRender
 //!
+//! ### WASM support
+//!
+//! Wgpu adapter/device/surface initialization is fundamentally async on the web. To avoid
+//! deadlocking the JS event loop, [`WindowRenderer::resume`] takes an `on_ready` callback:
+//! GPU backends spawn the init on `wasm_bindgen_futures::spawn_local` and invoke the callback
+//! once the surface is live. The embedder then calls [`WindowRenderer::complete_resume`] to
+//! transition the renderer to the active state. On native targets the same code path runs
+//! inline (`pollster::block_on` on the GPU backends), so callers see no behavioural difference.
+//!
 //! ### Backends
 //!
 //! Currently existing backends are:
@@ -102,9 +111,39 @@ pub trait WindowRenderer: RenderContext {
     type ScenePainter<'a>: PaintScene
     where
         Self: 'a;
-    fn resume(&mut self, window: Arc<dyn WindowHandle>, width: u32, height: u32);
+
+    /// Begin resuming the renderer. `on_ready` fires when initialization completes —
+    /// synchronously inside `resume` on native, asynchronously (via
+    /// `wasm_bindgen_futures::spawn_local`) on `wasm32-unknown-unknown`. After it
+    /// fires, the embedder must call [`complete_resume`](Self::complete_resume) to
+    /// transition the renderer to the active state.
+    fn resume<F: FnOnce() + 'static>(
+        &mut self,
+        window: Arc<dyn WindowHandle>,
+        width: u32,
+        height: u32,
+        on_ready: F,
+    );
+
+    /// Finalize a previously-initiated resume. Returns `true` once the renderer is
+    /// active and ready to render. Idempotent on already-active renderers; returns
+    /// `false` if a pending init has not yet produced a result.
+    ///
+    /// Backends whose `resume` finishes synchronously inline should return `true`
+    /// directly. There is intentionally no default: forgetting to override this on
+    /// an async-init backend would silently no-op rendering.
+    fn complete_resume(&mut self) -> bool;
+
     fn suspend(&mut self);
     fn is_active(&self) -> bool;
+
+    /// Returns `true` while an asynchronous resume is in flight (after `resume`
+    /// but before `complete_resume` has succeeded). Defaults to `false` for
+    /// backends with synchronous initialization.
+    fn is_pending(&self) -> bool {
+        false
+    }
+
     fn set_size(&mut self, width: u32, height: u32);
     fn render<F: FnOnce(&mut Self::ScenePainter<'_>)>(&mut self, draw_fn: F);
 }

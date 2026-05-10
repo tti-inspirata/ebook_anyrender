@@ -21,8 +21,19 @@ impl WindowRenderer for NullWindowRenderer {
     where
         Self: 'a;
 
-    fn resume(&mut self, _window: Arc<dyn WindowHandle>, _width: u32, _height: u32) {
+    fn resume<F: FnOnce() + 'static>(
+        &mut self,
+        _window: Arc<dyn WindowHandle>,
+        _width: u32,
+        _height: u32,
+        on_ready: F,
+    ) {
         self.is_active = true;
+        on_ready();
+    }
+
+    fn complete_resume(&mut self) -> bool {
+        true
     }
 
     fn suspend(&mut self) {
