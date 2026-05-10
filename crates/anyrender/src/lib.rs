@@ -30,9 +30,9 @@
 #![allow(clippy::collapsible_if)]
 
 use kurbo::{Affine, Rect, Shape, Stroke};
-use peniko::{BlendMode, Brush, Color, Fill, FontData, ImageBrushRef, StyleRef};
+use peniko::{BlendMode, Color, Fill, FontData, ImageBrushRef, StyleRef};
 use recording::RenderCommand;
-use std::sync::Arc;
+use std::{any::Any, sync::Arc};
 
 pub mod wasm_send_sync;
 pub use wasm_send_sync::*;
@@ -43,11 +43,62 @@ pub use null_backend::*;
 pub mod recording;
 pub use recording::Scene;
 
+mod resource_id;
+pub use resource_id::ResourceId;
+
 #[cfg(feature = "serde")]
 mod svg_path_parser;
 
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+pub enum RegisterResourceErrorKind {
+    /// The `RenderContext` you tried to register the resource with does not support the kind of resource
+    UnsupportedResourceKind,
+    /// Some other kind of error occured
+    Other,
+    /// This backend has not implemented resource registration
+    Unimplemented,
+    /// The `RenderContext` you tried to register the resource is not currently active
+    NotActive,
+}
+
+#[derive(Debug, Clone)]
+pub struct RegisterResourceError {
+    /// The kind of error that occurred when registering the resource
+    pub kind: RegisterResourceErrorKind,
+    /// An optional detailed error message
+    pub message: Option<String>,
+}
+
+impl From<RegisterResourceErrorKind> for RegisterResourceError {
+    fn from(kind: RegisterResourceErrorKind) -> Self {
+        Self {
+            kind,
+            message: None,
+        }
+    }
+}
+
+pub trait RenderContext {
+    fn try_register_custom_resource(
+        &mut self,
+        resource: Box<dyn Any>,
+    ) -> Result<ResourceId, RegisterResourceError> {
+        let _ = resource;
+        Err(RegisterResourceErrorKind::Unimplemented.into())
+    }
+    fn unregister_resource(&mut self, resource_id: ResourceId) {
+        let _ = resource_id;
+    }
+
+    /// Return a type-erased context type that is passed to custom widgets
+    /// in order to enable them to render renderer-specific content
+    fn renderer_specific_context(&self) -> Option<Box<dyn Any>> {
+        None
+    }
+}
+
 /// Abstraction for rendering a scene to a window
-pub trait WindowRenderer {
+pub trait WindowRenderer: RenderContext {
     type ScenePainter<'a>: PaintScene
     where
         Self: 'a;
@@ -59,7 +110,7 @@ pub trait WindowRenderer {
 }
 
 /// Abstraction for rendering a scene to an image buffer
-pub trait ImageRenderer {
+pub trait ImageRenderer: RenderContext {
     type ScenePainter<'a>: PaintScene
     where
         Self: 'a;
@@ -88,7 +139,7 @@ pub fn render_to_buffer<R: ImageRenderer, F: FnOnce(&mut R::ScenePainter<'_>)>(
 }
 
 /// Abstraction for drawing a 2D scene
-pub trait PaintScene {
+pub trait PaintScene: RenderContext {
     /// Removes all content from the scene
     fn reset(&mut self);
 
@@ -177,9 +228,11 @@ pub trait PaintScene {
                     &cmd.style,
                     scene_transform * cmd.transform,
                     match cmd.brush {
-                        Brush::Solid(alpha_color) => Brush::Solid(alpha_color),
-                        Brush::Gradient(ref gradient) => Brush::Gradient(gradient),
-                        Brush::Image(ref image) => Brush::Image(image.as_ref()),
+                        Paint::Solid(alpha_color) => Paint::Solid(alpha_color),
+                        Paint::Gradient(ref gradient) => Paint::Gradient(gradient),
+                        Paint::Image(ref image) => Paint::Image(image.as_ref()),
+                        Paint::Resource(id) => Paint::Resource(id),
+                        Paint::Custom(ref custom) => Paint::Custom(custom.as_ref()),
                     },
                     cmd.brush_transform,
                     &cmd.shape,
@@ -188,9 +241,11 @@ pub trait PaintScene {
                     cmd.fill,
                     scene_transform * cmd.transform,
                     match cmd.brush {
-                        Brush::Solid(alpha_color) => Brush::Solid(alpha_color),
-                        Brush::Gradient(ref gradient) => Brush::Gradient(gradient),
-                        Brush::Image(ref image) => Brush::Image(image.as_ref()),
+                        Paint::Solid(alpha_color) => Paint::Solid(alpha_color),
+                        Paint::Gradient(ref gradient) => Paint::Gradient(gradient),
+                        Paint::Image(ref image) => Paint::Image(image.as_ref()),
+                        Paint::Resource(id) => Paint::Resource(id),
+                        Paint::Custom(ref custom) => Paint::Custom(custom.as_ref()),
                     },
                     cmd.brush_transform,
                     &cmd.shape,
@@ -202,9 +257,11 @@ pub trait PaintScene {
                     &cmd.normalized_coords,
                     &cmd.style,
                     match cmd.brush {
-                        Brush::Solid(alpha_color) => Brush::Solid(alpha_color),
-                        Brush::Gradient(ref gradient) => Brush::Gradient(gradient),
-                        Brush::Image(ref image) => Brush::Image(image.as_ref()),
+                        Paint::Solid(alpha_color) => Paint::Solid(alpha_color),
+                        Paint::Gradient(ref gradient) => Paint::Gradient(gradient),
+                        Paint::Image(ref image) => Paint::Image(image.as_ref()),
+                        Paint::Resource(id) => Paint::Resource(id),
+                        Paint::Custom(ref custom) => Paint::Custom(custom.as_ref()),
                     },
                     cmd.brush_alpha,
                     scene_transform * cmd.transform,
