@@ -272,10 +272,8 @@ impl ApplicationHandler for App {
                 }
                 window.request_redraw();
             }
-            WindowEvent::MouseInput { state, .. } => {
-                if state.is_pressed() {
-                    self.bunny_manager.add_bunnies(100);
-                }
+            WindowEvent::MouseInput { state, .. } if state.is_pressed() => {
+                self.bunny_manager.add_bunnies(100);
             }
             WindowEvent::KeyboardInput {
                 event:
