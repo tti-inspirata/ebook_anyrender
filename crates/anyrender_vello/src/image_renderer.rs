@@ -1,4 +1,5 @@
-use anyrender::ImageRenderer;
+use anyrender::{ImageRenderer, RenderContext, ResourceId};
+use peniko::ImageData;
 use rustc_hash::FxHashMap;
 use std::sync::Arc;
 use vello::{Renderer as VelloRenderer, RendererOptions, Scene as VelloScene};
@@ -11,6 +12,7 @@ pub struct VelloImageRenderer {
     buffer_renderer: BufferRenderer,
     vello_renderer: VelloRenderer,
     scene: VelloScene,
+    texture_handles: FxHashMap<ResourceId, ImageData>,
 }
 
 impl VelloImageRenderer {
@@ -33,6 +35,7 @@ impl VelloImageRenderer {
         self.scene.reset();
     }
 }
+impl RenderContext for VelloImageRenderer {}
 
 impl ImageRenderer for VelloImageRenderer {
     type ScenePainter<'a>
@@ -72,6 +75,7 @@ impl ImageRenderer for VelloImageRenderer {
             buffer_renderer,
             vello_renderer,
             scene: VelloScene::new(),
+            texture_handles: FxHashMap::default(),
         }
     }
 
@@ -101,7 +105,8 @@ impl ImageRenderer for VelloImageRenderer {
         draw_fn(&mut VelloScenePainter {
             inner: &mut self.scene,
             renderer: Some(&mut self.vello_renderer),
-            custom_paint_sources: Some(&mut FxHashMap::default()),
+            device_handle: None,
+            texture_handles: Some(&mut self.texture_handles),
         });
 
         let size = self.buffer_renderer.size();

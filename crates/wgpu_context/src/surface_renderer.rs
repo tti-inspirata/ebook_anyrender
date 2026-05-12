@@ -1,8 +1,8 @@
 use crate::{DeviceHandle, WgpuContextError, util::create_texture};
 use wgpu::{
     CommandEncoderDescriptor, CompositeAlphaMode, Device, PresentMode, Queue, Surface,
-    SurfaceConfiguration, SurfaceTexture, TextureFormat, TextureUsages, TextureView,
-    TextureViewDescriptor, util::TextureBlitter,
+    SurfaceConfiguration, SurfaceError, SurfaceTexture, TextureFormat, TextureUsages,
+    TextureView, TextureViewDescriptor, util::TextureBlitter,
 };
 
 #[derive(Clone)]
@@ -79,21 +79,19 @@ struct IntermediateTextureStuff {
 /// Combination of surface and its configuration.
 pub struct SurfaceRenderer<'s> {
     // The device and queue for rendering to the surface
-    pub dev_id: usize,
     pub device_handle: DeviceHandle,
 
     // The surface and it's configuration
     pub surface: Surface<'s>,
     pub config: SurfaceConfiguration,
 
-    current_surface_texture: Option<SurfaceTexture>,
+    current_surface_texture: Option<Result<SurfaceTexture, SurfaceError>>,
     intermediate_texture: Option<Box<IntermediateTextureStuff>>,
 }
 
 impl std::fmt::Debug for SurfaceRenderer<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SurfaceRenderer")
-            .field("dev_id", &self.dev_id)
             .field("surface_config", &self.config)
             .field("has_intermediate_texture", &true)
             .finish()
@@ -102,12 +100,11 @@ impl std::fmt::Debug for SurfaceRenderer<'_> {
 
 impl<'s> SurfaceRenderer<'s> {
     /// Creates a new render surface for the specified window and dimensions.
-    pub async fn new<'w>(
+    pub fn new<'w>(
         surface: Surface<'w>,
         surface_renderer_config: SurfaceRendererConfiguration,
         intermediate_texture_config: Option<TextureConfiguration>,
         device_handle: DeviceHandle,
-        dev_id: usize,
     ) -> Result<SurfaceRenderer<'w>, WgpuContextError> {
         // Convert SurfaceRendererConfiguration to SurfaceConfiguration.
         // The difference is that `format` is a Vec in SurfaceRendererConfiguration and a single value in SurfaceConfiguration
@@ -142,7 +139,6 @@ impl<'s> SurfaceRenderer<'s> {
         });
 
         let surface = SurfaceRenderer {
-            dev_id,
             device_handle,
             surface,
             config: surface_config,
@@ -189,30 +185,46 @@ impl<'s> SurfaceRenderer<'s> {
             .configure(&self.device_handle.device, &self.config);
     }
 
-    fn ensure_current_surface_texture(&mut self) {
+    pub fn clear_surface_texture(&mut self) {
+        self.current_surface_texture = None;
+    }
+
+    pub fn ensure_current_surface_texture(&mut self) -> Result<(), SurfaceError> {
         if self.current_surface_texture.is_none() {
-            self.current_surface_texture = Some(
+            let tex = self.surface.get_current_texture();
+            if let Err(SurfaceError::Lost | SurfaceError::Outdated) = &tex {
                 self.surface
-                    .get_current_texture()
-                    .expect("failed to get surface texture"),
-            );
+                    .configure(&self.device_handle.device, &self.config);
+            }
+
+            self.current_surface_texture = Some(tex);
         }
+
+        self.current_surface_texture
+            .as_ref()
+            .unwrap()
+            .as_ref()
+            .map(|_| ())
+            .map_err(|err| err.clone())
     }
 
     /// Get a target texture view to render to.
     ///
     /// If there is an intermediate texture, this is a view of that intermediate texture, otherwise
     /// it is a view of the surface texture.
-    pub fn target_texture_view(&mut self) -> TextureView {
+    pub fn target_texture_view(&mut self) -> Result<TextureView, SurfaceError> {
         match &self.intermediate_texture {
-            Some(intermediate_texture) => intermediate_texture.texture_view.clone(),
+            Some(intermediate_texture) => Ok(intermediate_texture.texture_view.clone()),
             None => {
-                self.ensure_current_surface_texture();
-                self.current_surface_texture
+                self.ensure_current_surface_texture()?;
+                Ok(self
+                    .current_surface_texture
+                    .as_ref()
+                    .unwrap()
                     .as_ref()
                     .unwrap()
                     .texture
-                    .create_view(&TextureViewDescriptor::default())
+                    .create_view(&TextureViewDescriptor::default()))
             }
         }
     }
@@ -222,15 +234,17 @@ impl<'s> SurfaceRenderer<'s> {
     ///
     /// Prior to calling this, [`Self::target_texture_view`] must have been called and some
     /// rendering work must have been scheduled to the resulting view.
-    pub fn maybe_blit_and_present(&mut self) {
-        self.ensure_current_surface_texture();
-        let surface_texture = self.current_surface_texture.take().unwrap();
+    pub fn maybe_blit_and_present(&mut self) -> Result<(), SurfaceError> {
+        self.ensure_current_surface_texture()?;
+        let surface_texture = self.current_surface_texture.take().unwrap().unwrap();
 
         if let Some(its) = &self.intermediate_texture {
             self.blit_from_intermediate_texture_to_surface(&surface_texture, its);
         }
 
         surface_texture.present();
+
+        Ok(())
     }
 
     /// Blit from the intermediate texture to the surface texture
