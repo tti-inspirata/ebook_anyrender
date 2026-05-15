@@ -46,7 +46,11 @@ impl DeviceHandle {
 
         // Determine limits to request
         // The user may override the limits
-        let required_limits = override_limits.clone().unwrap_or_default();
+        let required_limits = override_limits.clone().unwrap_or_else(|| Limits {
+            // Fix iOS simulator
+            max_inter_stage_shader_variables: 15,
+            ..Limits::default()
+        });
 
         // Create the device and the queue
         let descripter = wgpu::DeviceDescriptor {
@@ -115,11 +119,15 @@ impl WGPUContext {
         override_limits: Option<Limits>,
     ) -> Self {
         Self {
-            instance: Instance::new(&wgpu::InstanceDescriptor {
+            instance: Instance::new(wgpu::InstanceDescriptor {
                 backends: wgpu::Backends::from_env().unwrap_or_default(),
                 flags: wgpu::InstanceFlags::from_build_config().with_env(),
                 backend_options: wgpu::BackendOptions::from_env_or_default(),
                 memory_budget_thresholds: wgpu::MemoryBudgetThresholds::default(),
+
+                // TODO: support passing display handle
+                // Needed for opengl/webgl
+                display: None,
             }),
             device_pool: Vec::new(),
             extra_features,

@@ -138,6 +138,7 @@ impl PaintScene for VelloScenePainter<'_, '_> {
         font_size: f32,
         hint: bool,
         normalized_coords: &'a [NormalizedCoord],
+        embolden: kurbo::Vec2,
         style: impl Into<StyleRef<'a>>,
         paint: impl Into<PaintRef<'a>>,
         brush_alpha: f32,
@@ -150,6 +151,9 @@ impl PaintScene for VelloScenePainter<'_, '_> {
             .font_size(font_size)
             .hint(hint)
             .normalized_coords(normalized_coords)
+            .font_embolden(vello::FontEmbolden::new(kurbo::Diagonal2::new(
+                embolden.x, embolden.y,
+            )))
             .brush(paint.into())
             .brush_alpha(brush_alpha)
             .transform(transform)
@@ -159,7 +163,7 @@ impl PaintScene for VelloScenePainter<'_, '_> {
                 glyphs.map(|g: anyrender::Glyph| vello::Glyph {
                     id: g.id,
                     x: g.x,
-                    y: g.y,
+                    y: g.y - embolden.y as f32,
                 }),
             );
     }
