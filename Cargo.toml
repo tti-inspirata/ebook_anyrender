@@ -29,9 +29,9 @@ rust-version = "1.88.0"
 anyrender = { version = "0.10.0", path = "./crates/anyrender" }
 anyrender_serialize = { version = "0.3.0", path = "./crates/anyrender_serialize" }
 anyrender_skia = { version = "0.7.0", path = "./crates/anyrender_skia" }
-anyrender_vello = { version = "0.10.0", path = "./crates/anyrender_vello" }
-anyrender_vello_cpu = { version = "0.12.0", path = "./crates/anyrender_vello_cpu" }
-anyrender_vello_hybrid = { version = "0.5.0", path = "./crates/anyrender_vello_hybrid" }
+anyrender_vello = { version = "0.10.1", path = "./crates/anyrender_vello" }
+anyrender_vello_cpu = { version = "0.12.1", path = "./crates/anyrender_vello_cpu" }
+anyrender_vello_hybrid = { version = "0.5.1", path = "./crates/anyrender_vello_hybrid" }
 anyrender_svg = { version = "0.11.0", path = "./crates/anyrender_svg" }
 wgpu_context = { version = "0.6.0", path = "./crates/wgpu_context" }
 pixels_window_renderer = { version = "0.5.0", path = "./crates/pixels_window_renderer" }
@@ -84,6 +84,3 @@ wasm-bindgen-futures = "0.4"
 
 # Dev-dependencies
 winit = { version = "0.30.2", features = ["rwh_06"] }
-
-[patch.crates-io]
-kurbo = { git = "https://github.com/linebender/kurbo", rev = "6836244" }

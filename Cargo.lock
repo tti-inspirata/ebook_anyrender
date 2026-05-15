@@ -218,7 +218,7 @@ dependencies = [
 
 [[package]]
 name = "anyrender_vello"
-version = "0.10.0"
+version = "0.10.1"
 dependencies = [
  "anyrender",
  "debug_timer",
@@ -235,7 +235,7 @@ dependencies = [
 
 [[package]]
 name = "anyrender_vello_cpu"
-version = "0.12.0"
+version = "0.12.1"
 dependencies = [
  "anyrender",
  "debug_timer",
@@ -249,7 +249,7 @@ dependencies = [
 
 [[package]]
 name = "anyrender_vello_hybrid"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "anyrender",
  "debug_timer",
@@ -4513,8 +4513,3 @@ checksum = "27bc9d5b815bc103f142aa054f561d9187d191692ec7c2d1e2b4737f8dbd7296"
 dependencies = [
  "zune-core",
 ]
-
-[[patch.unused]]
-name = "kurbo"
-version = "0.13.0"
-source = "git+https://github.com/linebender/kurbo?rev=6836244#6836244be0b280ff68728f100fca0a5fcf62638a"
