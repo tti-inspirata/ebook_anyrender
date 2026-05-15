@@ -300,7 +300,7 @@ impl PaintScene for VelloHybridScenePainter<'_> {
                     .fill_glyphs(glyphs.map(|g| glifo::Glyph {
                         id: g.id,
                         x: g.x,
-                        y: g.y - embolden.y as f32,
+                        y: g.y,
                     }));
             }
             StyleRef::Stroke(stroke) => {

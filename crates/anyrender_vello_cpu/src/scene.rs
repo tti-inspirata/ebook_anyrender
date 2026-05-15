@@ -152,7 +152,7 @@ impl PaintScene for VelloCpuScenePainter {
                     .fill_glyphs(glyphs.map(|g| vello_cpu::Glyph {
                         id: g.id,
                         x: g.x,
-                        y: g.y - embolden.y as f32,
+                        y: g.y,
                     }));
             }
             StyleRef::Stroke(stroke) => {
