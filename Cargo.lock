@@ -153,7 +153,7 @@ dependencies = [
 
 [[package]]
 name = "anyrender"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "kurbo",
  "peniko",
@@ -163,7 +163,7 @@ dependencies = [
 
 [[package]]
 name = "anyrender_serialize"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyrender",
  "image",
@@ -181,7 +181,7 @@ dependencies = [
 
 [[package]]
 name = "anyrender_skia"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "anyrender",
  "ash",
@@ -207,7 +207,7 @@ dependencies = [
 
 [[package]]
 name = "anyrender_svg"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "anyrender",
  "image",
@@ -218,7 +218,7 @@ dependencies = [
 
 [[package]]
 name = "anyrender_vello"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "anyrender",
  "debug_timer",
@@ -235,7 +235,7 @@ dependencies = [
 
 [[package]]
 name = "anyrender_vello_cpu"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "anyrender",
  "debug_timer",
@@ -249,7 +249,7 @@ dependencies = [
 
 [[package]]
 name = "anyrender_vello_hybrid"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "anyrender",
  "debug_timer",
@@ -2371,7 +2371,7 @@ dependencies = [
 
 [[package]]
 name = "pixels_window_renderer"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "anyrender",
  "debug_timer",
@@ -3115,7 +3115,7 @@ dependencies = [
 
 [[package]]
 name = "softbuffer_window_renderer"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "anyrender",
  "debug_timer",
@@ -4012,7 +4012,7 @@ dependencies = [
 
 [[package]]
 name = "wgpu_context"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "futures-intrusive",
  "wgpu",
