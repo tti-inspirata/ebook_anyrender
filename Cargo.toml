@@ -28,7 +28,7 @@ rust-version = "1.88.0"
 # AnyRender dependencies (in-repo)
 anyrender = { version = "0.10.0", path = "./crates/anyrender" }
 anyrender_serialize = { version = "0.3.0", path = "./crates/anyrender_serialize" }
-anyrender_skia = { version = "0.7.0", path = "./crates/anyrender_skia" }
+anyrender_skia = { version = "0.8.0", path = "./crates/anyrender_skia" }
 anyrender_vello = { version = "0.10.1", path = "./crates/anyrender_vello" }
 anyrender_vello_cpu = { version = "0.12.1", path = "./crates/anyrender_vello_cpu" }
 anyrender_vello_hybrid = { version = "0.5.1", path = "./crates/anyrender_vello_hybrid" }
