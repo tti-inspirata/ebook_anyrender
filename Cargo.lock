@@ -163,13 +163,13 @@ dependencies = [
 
 [[package]]
 name = "anyrender_serialize"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyrender",
  "image",
  "kurbo",
  "peniko",
- "read-fonts 0.37.0",
+ "read-fonts 0.39.2",
  "serde",
  "serde_json",
  "sha2",
@@ -1416,8 +1416,6 @@ version = "0.15.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9229cfe53dfd69f0609a49f65461bd93001ea1ef889cd5529dd176593f5338a1"
 dependencies = [
- "allocator-api2",
- "equivalent",
  "foldhash 0.1.5",
 ]
 
@@ -2946,16 +2944,14 @@ checksum = "8ee5873ec9cce0195efcb7a4e9507a04cd49aec9c83d0389df45b1ef7ba2e649"
 
 [[package]]
 name = "skera"
-version = "0.1.0"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "78071e59409b81dffa944716740f7cc90e26dc3f3b1214fb58beae5f48ffcb36"
+checksum = "caad12d9a3f75948b725a643cd60aea6de9d20cb03d3e35221e7a8a31c549409"
 dependencies = [
- "clap",
  "fnv",
- "hashbrown 0.15.5",
- "regex",
- "skrifa 0.40.0",
- "thiserror 1.0.69",
+ "hashbrown 0.17.1",
+ "skrifa 0.42.1",
+ "thiserror 2.0.18",
  "write-fonts",
 ]
 
@@ -4301,15 +4297,15 @@ checksum = "1ebf944e87a7c253233ad6766e082e3cd714b5d03812acc24c318f549614536e"
 
 [[package]]
 name = "write-fonts"
-version = "0.45.0"
+version = "0.48.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f12725b0845073e20b04e79b500dbfb465904d7cbd84883a1f1bbd084debc515"
+checksum = "cb731d4c4d93eacc69a1ad2f270f905788a98e4a3438267bcafbe08d3431c8d8"
 dependencies = [
  "font-types 0.11.3",
  "indexmap",
  "kurbo",
  "log",
- "read-fonts 0.37.0",
+ "read-fonts 0.39.2",
 ]
 
 [[package]]
