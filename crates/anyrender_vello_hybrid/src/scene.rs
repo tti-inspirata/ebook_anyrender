@@ -179,13 +179,10 @@ impl PaintScene for VelloHybridScenePainter<'_> {
     ) {
         self.scene.set_transform(transform);
         self.layer_stack.push(LayerKind::Layer);
-        self.scene.push_layer(
-            Some(&clip.into_path(DEFAULT_TOLERANCE)),
-            Some(blend.into()),
-            Some(alpha),
-            None,
-            None,
-        );
+        self.scene
+            .push_clip_path(&clip.into_path(DEFAULT_TOLERANCE));
+        self.scene
+            .push_layer(None, Some(blend.into()), Some(alpha), None, None);
     }
 
     fn push_clip_layer(&mut self, transform: Affine, clip: &impl Shape) {
@@ -198,7 +195,10 @@ impl PaintScene for VelloHybridScenePainter<'_> {
     fn pop_layer(&mut self) {
         if let Some(kind) = self.layer_stack.pop() {
             match kind {
-                LayerKind::Layer => self.scene.pop_layer(),
+                LayerKind::Layer => {
+                    self.scene.pop_layer();
+                    self.scene.pop_clip_path();
+                }
                 LayerKind::Clip => self.scene.pop_clip_path(),
             }
         }
