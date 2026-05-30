@@ -14,7 +14,7 @@ use crate::cache::{
     NormalizedTypefaceCacheKeyBorrowed,
 };
 
-pub(crate) struct SkiaSceneCache {
+pub struct SkiaSceneCache {
     paint: Paint,
     dash_intervals: Vec<f32>,
     #[cfg(any(target_os = "macos", target_os = "ios"))]
@@ -29,7 +29,13 @@ pub(crate) struct SkiaSceneCache {
 }
 
 impl SkiaSceneCache {
-    pub(crate) fn next_gen(&mut self) {
+    /// Create a new `SkiaSceneCache`
+    pub fn new() -> Self {
+        Default::default()
+    }
+
+    /// Increment the generation on the caches. Should be called once per frame.
+    pub fn next_gen(&mut self) {
         self.typeface.next_gen();
         self.normalized_typeface.next_gen();
         self.image_shader.next_gen();
@@ -61,6 +67,13 @@ pub struct SkiaScenePainter<'a> {
 }
 
 impl SkiaScenePainter<'_> {
+    pub fn new<'a>(canvas: &'a Canvas, cache: &'a mut SkiaSceneCache) -> SkiaScenePainter<'a> {
+        SkiaScenePainter {
+            inner: canvas,
+            cache,
+        }
+    }
+
     fn reset_paint(&mut self) {
         self.cache.paint.reset();
         self.cache.paint.set_anti_alias(true);
