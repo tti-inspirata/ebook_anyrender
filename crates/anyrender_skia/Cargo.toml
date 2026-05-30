@@ -1,7 +1,7 @@
 [package]
 name = "anyrender_skia"
 description = "Skia backend for anyrender"
-version = "0.8.0"
+version = "0.8.1"
 documentation = "https://docs.rs/anyrender_skia"
 homepage.workspace = true
 repository.workspace = true
@@ -43,4 +43,4 @@ objc2 = { version = "0.6.3", default-features = false }
 objc2-core-foundation = { version = "0.3.2", default-features = false }
 objc2-metal = { version = "0.3.2", default-features = false, features = ["MTLCommandBuffer", "MTLCommandQueue", "MTLDrawable", "MTLPixelFormat"] }
 objc2-quartz-core = { version = "0.3.2", default-features = false, features = ["objc2-core-foundation", "objc2-metal", "CAMetalLayer"] }
-skia-safe = { version = "0.97.0", features = ["metal"] }
+skia-safe = { version = "0.97.2", features = ["metal"] }
