@@ -207,9 +207,7 @@ fn draw_text_with_parley(scene: &mut Scene) {
         let text = "Hello World!";
         let mut builder = layout_cx.ranged_builder(&mut font_cx, text, 1.0, true);
         builder.push_default(StyleProperty::FontSize(18.0));
-        builder.push_default(StyleProperty::FontFamily(FontFamily::named(
-            "Roboto".into(),
-        )));
+        builder.push_default(StyleProperty::FontFamily(FontFamily::named("Roboto")));
         let mut layout: Layout<()> = builder.build(text);
         layout.break_all_lines(Some(140.0));
         layout.align(Alignment::Start, AlignmentOptions::default());
@@ -227,9 +225,7 @@ fn draw_text_with_parley(scene: &mut Scene) {
             "Serialization roundtrip test: fonts are subsetted, compressed to WOFF2, and restored.";
         let mut builder = layout_cx.ranged_builder(&mut font_cx, text, 1.0, true);
         builder.push_default(StyleProperty::FontSize(13.0));
-        builder.push_default(StyleProperty::FontFamily(FontFamily::named(
-            "Roboto".into(),
-        )));
+        builder.push_default(StyleProperty::FontFamily(FontFamily::named("Roboto")));
         let mut layout: Layout<()> = builder.build(text);
         layout.break_all_lines(Some(150.0));
         layout.align(Alignment::Start, AlignmentOptions::default());
