@@ -190,7 +190,7 @@ dependencies = [
  "debug_timer",
  "gl",
  "glutin",
- "hashbrown 0.16.1",
+ "hashbrown 0.17.1",
  "kurbo",
  "oaty",
  "objc2 0.6.4",
@@ -1428,6 +1428,8 @@ version = "0.17.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ed5909b6e89a2db4456e54cd5f673791d7eca6732202bbf2a9cc504fe2f9b84a"
 dependencies = [
+ "allocator-api2",
+ "equivalent",
  "foldhash 0.2.0",
 ]
 
