@@ -1068,12 +1068,6 @@ checksum = "77ce24cb58228fbb8aa041425bb1050850ac19177686ea6e0f41a70416f56fdb"
 
 [[package]]
 name = "font-types"
-version = "0.10.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "39a654f404bbcbd48ea58c617c2993ee91d1cb63727a37bf2323a4edeed1b8c5"
-
-[[package]]
-name = "font-types"
 version = "0.11.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5b38ad915f6dadd993ced50848a8291a543bd41ca62bc10740d5e64e2ab4cfd7"
@@ -1996,11 +1990,11 @@ dependencies = [
 
 [[package]]
 name = "oaty"
-version = "0.1.0"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cd7890d4a4c9205ee57a5e200658e78ed7d51c9cd48d0f7066596a19cc20e5d2"
+checksum = "cc8f19a1c361e5fb1a57e487b993ff8b3c44321b50ca86c9e2b235e57dc94008"
 dependencies = [
- "font-types 0.10.1",
+ "font-types",
 ]
 
 [[package]]
@@ -2734,7 +2728,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c4ed38b89c2c77ff968c524145ad65fb010f38af5c7a224b53b81d47ac2daa81"
 dependencies = [
  "bytemuck",
- "font-types 0.11.3",
+ "font-types",
 ]
 
 [[package]]
@@ -4414,7 +4408,7 @@ version = "0.48.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cb731d4c4d93eacc69a1ad2f270f905788a98e4a3438267bcafbe08d3431c8d8"
 dependencies = [
- "font-types 0.11.3",
+ "font-types",
  "indexmap",
  "kurbo",
  "log",

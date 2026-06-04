@@ -23,7 +23,7 @@ raw-window-handle = { workspace = true }
 softbuffer_window_renderer = { workspace = true, optional = true }
 pixels_window_renderer = { workspace = true, optional = true }
 skia-safe = { version = "0.97.0", features = ["gl", "pdf", "textlayout"]}
-oaty = "0.1"
+oaty = "0.2"
 hashbrown = "0.16.0"
 
 [target.'cfg(not(any(target_os = "macos", target_os = "ios")))'.dependencies]
