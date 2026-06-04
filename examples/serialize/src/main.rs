@@ -10,8 +10,9 @@ use anyrender_serialize::{SceneArchive, SerializeConfig};
 use anyrender_vello_cpu::VelloCpuImageRenderer;
 use image::{ImageBuffer, RgbaImage};
 use kurbo::{Affine, Circle, Point, Rect, RoundedRect, Stroke, Vec2};
-use parley::style::{FontFamily, FontStack};
-use parley::{Alignment, AlignmentOptions, FontContext, Layout, LayoutContext, StyleProperty};
+use parley::{
+    Alignment, AlignmentOptions, FontContext, FontFamily, Layout, LayoutContext, StyleProperty,
+};
 use peniko::{
     Blob, Color, Fill, FontData, ImageAlphaType, ImageBrush, ImageData, ImageFormat, Mix,
 };
@@ -206,12 +207,12 @@ fn draw_text_with_parley(scene: &mut Scene) {
         let text = "Hello World!";
         let mut builder = layout_cx.ranged_builder(&mut font_cx, text, 1.0, true);
         builder.push_default(StyleProperty::FontSize(18.0));
-        builder.push_default(StyleProperty::FontStack(FontStack::Single(
-            FontFamily::Named("Roboto".into()),
+        builder.push_default(StyleProperty::FontFamily(FontFamily::named(
+            "Roboto".into(),
         )));
         let mut layout: Layout<()> = builder.build(text);
         layout.break_all_lines(Some(140.0));
-        layout.align(Some(140.0), Alignment::Start, AlignmentOptions::default());
+        layout.align(Alignment::Start, AlignmentOptions::default());
         render_layout(
             scene,
             &layout,
@@ -226,12 +227,12 @@ fn draw_text_with_parley(scene: &mut Scene) {
             "Serialization roundtrip test: fonts are subsetted, compressed to WOFF2, and restored.";
         let mut builder = layout_cx.ranged_builder(&mut font_cx, text, 1.0, true);
         builder.push_default(StyleProperty::FontSize(13.0));
-        builder.push_default(StyleProperty::FontStack(FontStack::Single(
-            FontFamily::Named("Roboto".into()),
+        builder.push_default(StyleProperty::FontFamily(FontFamily::named(
+            "Roboto".into(),
         )));
         let mut layout: Layout<()> = builder.build(text);
         layout.break_all_lines(Some(150.0));
-        layout.align(Some(150.0), Alignment::Start, AlignmentOptions::default());
+        layout.align(Alignment::Start, AlignmentOptions::default());
         render_layout(
             scene,
             &layout,
