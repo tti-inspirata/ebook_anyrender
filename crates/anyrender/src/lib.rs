@@ -33,8 +33,11 @@
 //! ### Backends
 //!
 //! Currently existing backends are:
-//!  - [anyrender_vello](https://docs.rs/anyrender_vello)
-//!  - [anyrender_vello_cpu](https://docs.rs/anyrender_vello_cpu)
+//!
+//! - [anyrender_vello_hybrid](https://docs.rs/anyrender_vello_hybrid) which draws using [vello_hybrid](https://docs.rs/vello_hybrid)
+//! - [anyrender_vello_cpu](https://docs.rs/anyrender_vello_cpu) which draws using [vello_cpu](https://docs.rs/vello_cpu)
+//! - [anyrender_vello](https://docs.rs/anyrender_vello) which draws using [vello](https://docs.rs/vello)
+//! - [anyrender_skia](https://crates.io/crates/anyrender_skia) which draws using Skia (via the [skia-safe](https://github.com/rust-skia/rust-skia) crate)
 
 #![allow(clippy::collapsible_if)]
 
@@ -43,6 +46,8 @@ use peniko::{BlendMode, Color, Fill, FontData, ImageBrushRef, StyleRef};
 use recording::RenderCommand;
 use std::{any::Any, sync::Arc};
 
+pub mod filters;
+pub use filters::Filter;
 pub mod wasm_send_sync;
 pub use wasm_send_sync::*;
 pub mod types;
@@ -191,6 +196,8 @@ pub trait PaintScene: RenderContext {
         alpha: f32,
         transform: Affine,
         clip: &impl Shape,
+        filter: Option<Arc<Filter>>,
+        backdrop_filter: Option<Arc<Filter>>,
     );
 
     /// Pushes a new clip layer clipped by the specified shape.
@@ -259,6 +266,8 @@ pub trait PaintScene: RenderContext {
                     cmd.alpha,
                     scene_transform * cmd.transform,
                     &cmd.clip,
+                    cmd.filter,
+                    cmd.backdrop_filter,
                 ),
                 RenderCommand::PushClipLayer(cmd) => {
                     self.push_clip_layer(scene_transform * cmd.transform, &cmd.clip)

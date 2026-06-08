@@ -1,4 +1,6 @@
-use anyrender::{NormalizedCoord, Paint, PaintRef, PaintScene, RenderContext};
+use std::sync::Arc;
+
+use anyrender::{Filter, NormalizedCoord, Paint, PaintRef, PaintScene, RenderContext};
 use glifo::FontEmbolden;
 use kurbo::{Affine, Diagonal2, Rect, Shape, Stroke};
 use peniko::{BlendMode, Color, Fill, FontData, ImageBrush, StyleRef};
@@ -63,14 +65,27 @@ impl PaintScene for VelloCpuScenePainter {
         alpha: f32,
         transform: Affine,
         clip: &impl Shape,
+        filter: Option<Arc<Filter>>,
+        _backdrop_filter: Option<Arc<Filter>>,
     ) {
+        #[cfg(feature = "filters")]
+        let filter = filter
+            .and_then(crate::filters::convert_filter)
+            .filter(|_| cfg!(not(feature = "multithreading")));
+
+        #[cfg(not(feature = "filters"))]
+        let filter = {
+            let _ = filter;
+            None
+        };
+
         self.render_ctx.set_transform(transform);
         self.render_ctx.push_layer(
             Some(&clip.into_path(DEFAULT_TOLERANCE)),
             Some(blend.into()),
             Some(alpha),
             None,
-            None,
+            filter,
         );
     }
 
