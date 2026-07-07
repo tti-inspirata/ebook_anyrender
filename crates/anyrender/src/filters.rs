@@ -427,10 +427,13 @@ pub enum FilterEffect {
 }
 
 // Assert size of FilterEffect.
-// This is just for documentation purposes. Feel free to update the value as necessary
-#[cfg(not(target_arch = "wasm32"))]
+// This is just for documentation purposes. Feel free to update the value as necessary.
+// The size depends on pointer width (usize/pointer fields inside the variants), so
+// gate by target_pointer_width rather than wasm32: 64-bit targets are 128 bytes,
+// 32-bit targets (wasm32, armv7/armeabi-v7a, …) are 88.
+#[cfg(target_pointer_width = "64")]
 const _: [u8; 128] = [0; std::mem::size_of::<FilterEffect>()];
-#[cfg(target_arch = "wasm32")]
+#[cfg(target_pointer_width = "32")]
 const _: [u8; 88] = [0; std::mem::size_of::<FilterEffect>()];
 
 impl FilterEffect {
