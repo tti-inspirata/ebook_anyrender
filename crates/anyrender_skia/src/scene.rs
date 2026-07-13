@@ -1,13 +1,18 @@
 use std::sync::Arc;
 
 use anyrender::filters::component_transfer::TransferFunction;
+use anyrender::filters::composite::CompositeOperator;
+use anyrender::filters::displacement::ColorChannel;
+use anyrender::filters::lighting::{DistantLightSource, LightSource};
+use anyrender::filters::morphology::MorphologyOperator;
+use anyrender::filters::turbulence::TurbulenceType;
 use anyrender::filters::{Filter, FilterEffect, FilterId, FilterInput};
 use anyrender::{PaintScene, RenderContext};
 use peniko::color::AlphaColor;
 use skia_safe::{
-    BlurStyle, Canvas, Color, ColorSpace, Font, FontArguments, FontHinting, FontMgr, GlyphId,
-    ImageFilter, MaskFilter, Paint, PaintCap, PaintJoin, PaintStyle, PathEffect, Point, RRect,
-    Rect, Shader, Typeface,
+    BlendMode as SkBlendMode, BlurStyle, Canvas, Color, ColorSpace, Font, FontArguments,
+    FontHinting, FontMgr, GlyphId, ImageFilter, MaskFilter, Paint, PaintCap, PaintJoin, PaintStyle,
+    PathEffect, Point, Point3, RRect, Rect, Shader, Typeface,
     canvas::{GlyphPositions, SaveLayerRec},
     font::Edging,
     font_arguments::{VariationPosition, variation_position::Coordinate},
@@ -587,17 +592,24 @@ fn convert_filter(filter: &Filter) -> Option<ImageFilter> {
     convert_filter_effect(filter, filter.output())
 }
 
-fn convert_filter_effect(filter: &Filter, id: FilterId) -> Option<ImageFilter> {
-    let node = &filter.nodes()[id.0 as usize];
-    let input = node.inputs.primary.as_ref().and_then(|input| match input {
+fn resolve_input(filter: &Filter, input: &Option<FilterInput>) -> Option<ImageFilter> {
+    input.as_ref().and_then(|input| match input {
         FilterInput::Source(_) => None,
         FilterInput::Result(input_id) => convert_filter_effect(filter, *input_id),
-    });
+    })
+}
+
+fn convert_filter_effect(filter: &Filter, id: FilterId) -> Option<ImageFilter> {
+    let node = &filter.nodes()[id.0 as usize];
+    let input = resolve_input(filter, &node.inputs.primary);
+    // Secondary input ("in2" in SVG), used by filters that combine two inputs such as
+    // composite, blend and displacement map.
+    let secondary = resolve_input(filter, &node.inputs.secondary);
 
     // Clone to avoid borrow checking issues. Cloning is cheap as filters are refcounted.
     let input_clone = input.clone();
 
-    use skia_safe::{color_filters, image_filters};
+    use skia_safe::{color_filters, image_filters, shaders};
 
     let filter: Option<ImageFilter> = match &node.effect {
         FilterEffect::Flood(color) => {
@@ -698,23 +710,207 @@ fn convert_filter_effect(filter: &Filter, id: FilterId) -> Option<ImageFilter> {
             image_filters::offset((offset.x as f32, offset.y as f32), input, None)
         }
 
-        // TODO: implement remaining filter effect types
-        FilterEffect::Composite(_composite_operator) => None,
-        FilterEffect::Blend(_mix) => None,
-        FilterEffect::Morphology(_morphology_filter) => None,
-        FilterEffect::ConvolveMatrix(_convolution_kernel) => None,
-        FilterEffect::Turbulence(_turbulence_filter) => None,
-        FilterEffect::DisplacementMap(_displacement_map_filter) => None,
+        FilterEffect::Composite(composite_operator) => match composite_operator {
+            // Arithmetic combination: result = k1*i1*i2 + k2*i1 + k3*i2 + k4, where i1 is the
+            // primary input and i2 is the secondary input. Skia's `arithmetic` computes
+            // k1*fg*bg + k2*fg + k3*bg + k4, so foreground = primary, background = secondary.
+            CompositeOperator::Arithmetic(a) => {
+                image_filters::arithmetic(a.k1, a.k2, a.k3, a.k4, false, secondary, input, None)
+            }
+            // Porter-Duff operators. The primary input is the source (foreground) and the
+            // secondary input is the destination (background).
+            _ => {
+                let mode = match composite_operator {
+                    CompositeOperator::Over => SkBlendMode::SrcOver,
+                    CompositeOperator::In => SkBlendMode::SrcIn,
+                    CompositeOperator::Out => SkBlendMode::SrcOut,
+                    CompositeOperator::Atop => SkBlendMode::SrcATop,
+                    CompositeOperator::Xor => SkBlendMode::Xor,
+                    CompositeOperator::Arithmetic(_) => unreachable!(),
+                };
+                image_filters::blend(mode, secondary, input, None)
+            }
+        },
+        FilterEffect::Blend(mix) => {
+            // The primary input is the top layer (foreground) and the secondary input is the
+            // bottom layer (background).
+            let blend_mode = peniko::BlendMode {
+                mix: *mix,
+                compose: peniko::Compose::SrcOver,
+            };
+            let mode = sk_peniko::blend_mode_from(blend_mode);
+            image_filters::blend(mode, secondary, input, None)
+        }
+        FilterEffect::Morphology(morphology_filter) => {
+            let radius = (morphology_filter.radius, morphology_filter.radius);
+            match morphology_filter.operator {
+                MorphologyOperator::Dilate => image_filters::dilate(radius, input, None),
+                MorphologyOperator::Erode => image_filters::erode(radius, input, None),
+            }
+        }
+        FilterEffect::ConvolveMatrix(convolution_kernel) => {
+            let size = convolution_kernel.size as i32;
+            // Skia applies `gain` as a multiplier, so invert the divisor.
+            let gain = if convolution_kernel.divisor != 0.0 {
+                1.0 / convolution_kernel.divisor
+            } else {
+                1.0
+            };
+            // Center the kernel over each pixel (SVG default targetX/Y = floor(order / 2)).
+            let offset = size / 2;
+            image_filters::matrix_convolution(
+                skia_safe::ISize::new(size, size),
+                &convolution_kernel.values,
+                gain,
+                convolution_kernel.bias,
+                skia_safe::IPoint::new(offset, offset),
+                skia_safe::TileMode::Clamp,
+                !convolution_kernel.preserve_alpha,
+                input,
+                None,
+            )
+        }
+        FilterEffect::Turbulence(turbulence_filter) => {
+            let base_frequency = (
+                turbulence_filter.base_frequency,
+                turbulence_filter.base_frequency,
+            );
+            let num_octaves = turbulence_filter.num_octaves as usize;
+            let seed = turbulence_filter.seed as f32;
+            let shader = match turbulence_filter.turbulence_type {
+                TurbulenceType::FractalNoise => {
+                    shaders::fractal_noise(base_frequency, num_octaves, seed, None)
+                }
+                TurbulenceType::Turbulence => {
+                    shaders::turbulence(base_frequency, num_octaves, seed, None)
+                }
+            };
+            shader.and_then(|shader| image_filters::shader(shader, None))
+        }
+        FilterEffect::DisplacementMap(displacement_map_filter) => {
+            // The primary input provides the pixels to displace ("in"), the secondary input
+            // provides the displacement vectors ("in2").
+            image_filters::displacement_map(
+                (
+                    to_sk_color_channel(displacement_map_filter.x_channel),
+                    to_sk_color_channel(displacement_map_filter.y_channel),
+                ),
+                displacement_map_filter.scale,
+                secondary,
+                input,
+                None,
+            )
+        }
+        FilterEffect::DiffuseLighting(diffuse_lighting_filter) => {
+            // SVG lighting-color defaults to white.
+            let light_color = Color::WHITE;
+            let surface_scale = diffuse_lighting_filter.surface_scale;
+            let kd = diffuse_lighting_filter.diffuse_constant;
+            match &diffuse_lighting_filter.light_source {
+                LightSource::Distant(distant) => image_filters::distant_lit_diffuse(
+                    distant_light_direction(distant),
+                    light_color,
+                    surface_scale,
+                    kd,
+                    input,
+                    None,
+                ),
+                LightSource::Point(point) => image_filters::point_lit_diffuse(
+                    Point3::new(point.x, point.y, point.z),
+                    light_color,
+                    surface_scale,
+                    kd,
+                    input,
+                    None,
+                ),
+                LightSource::Spot(spot) => image_filters::spot_lit_diffuse(
+                    Point3::new(spot.x, spot.y, spot.z),
+                    Point3::new(spot.points_at_x, spot.points_at_y, spot.points_at_z),
+                    spot.specular_exponent,
+                    spot.limiting_cone_angle.unwrap_or(90.0),
+                    light_color,
+                    surface_scale,
+                    kd,
+                    input,
+                    None,
+                ),
+            }
+        }
+        FilterEffect::SpecularLighting(specular_lighting_filter) => {
+            // SVG lighting-color defaults to white.
+            let light_color = Color::WHITE;
+            let surface_scale = specular_lighting_filter.surface_scale;
+            let ks = specular_lighting_filter.specular_constant;
+            let shininess = specular_lighting_filter.specular_exponent;
+            match &specular_lighting_filter.light_source {
+                LightSource::Distant(distant) => image_filters::distant_lit_specular(
+                    distant_light_direction(distant),
+                    light_color,
+                    surface_scale,
+                    ks,
+                    shininess,
+                    input,
+                    None,
+                ),
+                LightSource::Point(point) => image_filters::point_lit_specular(
+                    Point3::new(point.x, point.y, point.z),
+                    light_color,
+                    surface_scale,
+                    ks,
+                    shininess,
+                    input,
+                    None,
+                ),
+                LightSource::Spot(spot) => image_filters::spot_lit_specular(
+                    Point3::new(spot.x, spot.y, spot.z),
+                    Point3::new(spot.points_at_x, spot.points_at_y, spot.points_at_z),
+                    spot.specular_exponent,
+                    spot.limiting_cone_angle.unwrap_or(90.0),
+                    light_color,
+                    surface_scale,
+                    ks,
+                    shininess,
+                    input,
+                    None,
+                ),
+            }
+        }
+
+        // These require resources or bounds that aren't available at this layer, so they are
+        // not yet implemented.
+        // - `Image` needs to resolve an external image by id from a resource registry.
+        // - `Tile` needs the filter primitive subregion (src/dst rects) to tile into.
         FilterEffect::Image(_external_image_source) => None,
         FilterEffect::Tile => None,
-        FilterEffect::DiffuseLighting(_diffuse_lighting_filter) => None,
-        FilterEffect::SpecularLighting(_specular_lighting_filter) => None,
     };
 
     // If we do not implement given type of filter then the match statement above returns None
     // In that case, if we have an input then we pass that along instead. In the case of filter chains
     // with some unimplemented filters that allows the remaining filters to work
     filter.or(input_clone)
+}
+
+/// Convert an anyrender displacement-map [`ColorChannel`] to the corresponding Skia channel.
+fn to_sk_color_channel(channel: ColorChannel) -> skia_safe::ColorChannel {
+    match channel {
+        ColorChannel::Red => skia_safe::ColorChannel::R,
+        ColorChannel::Green => skia_safe::ColorChannel::G,
+        ColorChannel::Blue => skia_safe::ColorChannel::B,
+        ColorChannel::Alpha => skia_safe::ColorChannel::A,
+    }
+}
+
+/// Compute the direction vector towards a distant light source from its azimuth and elevation.
+///
+/// Angles are interpreted as degrees, following the SVG `feDistantLight` convention.
+fn distant_light_direction(light: &DistantLightSource) -> Point3 {
+    let azimuth = light.azimuth.to_radians();
+    let elevation = light.elevation.to_radians();
+    Point3::new(
+        azimuth.cos() * elevation.cos(),
+        azimuth.sin() * elevation.cos(),
+        elevation.sin(),
+    )
 }
 
 mod sk_peniko {
