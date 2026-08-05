@@ -31,7 +31,9 @@ pub struct SkiaSceneCache {
     extracted_font_data: GenerationalCache<(u64, u32), peniko::FontData>,
     typeface: GenerationalCache<(u64, u32), Typeface>,
     normalized_typeface: GenerationalCache<NormalizedTypefaceCacheKey, Typeface>,
-    image_shader: GenerationalCache<u64, Shader>,
+    // The `Blob` is held alongside the `Shader` because the shader references the
+    // image pixels without owning them (see `shader_from_image_brush`).
+    image_shader: GenerationalCache<u64, (Shader, peniko::Blob<u8>)>,
     font: GenerationalCache<FontCacheKey, Font>,
     font_mgr: FontMgr,
     glyph_id_buf: Vec<GlyphId>,
@@ -142,7 +144,8 @@ impl SkiaScenePainter<'_> {
                     .set_shader(sk_peniko::shader_from_gradient(gradient, brush_transform));
             }
             anyrender::Paint::Image(image_brush) => {
-                if let Some(shader) = self.cache.image_shader.hit(&image_brush.image.data.id()) {
+                if let Some((shader, _)) = self.cache.image_shader.hit(&image_brush.image.data.id())
+                {
                     self.cache.paint.set_shader(shader.clone());
                     return;
                 }
@@ -150,9 +153,10 @@ impl SkiaScenePainter<'_> {
                 let image_shader = sk_peniko::shader_from_image_brush(image_brush, brush_transform);
 
                 if let Some(shader) = &image_shader {
-                    self.cache
-                        .image_shader
-                        .insert(image_brush.image.data.id(), shader.clone());
+                    self.cache.image_shader.insert(
+                        image_brush.image.data.id(),
+                        (shader.clone(), image_brush.image.data.clone()),
+                    );
                 }
 
                 self.cache.paint.set_shader(image_shader);
@@ -563,7 +567,7 @@ impl PaintScene for SkiaScenePainter<'_> {
 
         if std_dev > 0.0 {
             self.cache.paint.set_mask_filter(
-                MaskFilter::blur(BlurStyle::Normal, std_dev as f32, false).unwrap(),
+                MaskFilter::blur(BlurStyle::Normal, std_dev as f32, true).unwrap(),
             );
         }
 
@@ -1258,12 +1262,16 @@ mod sk_kurbo {
 
     pub(super) fn rrect_from(rrect: RoundedRect) -> SkRRect {
         let rect = rect_from(rrect.rect());
-        SkRRect::new_nine_patch(
+        let radii = rrect.radii();
+        // Corner order: upper-left, upper-right, lower-right, lower-left
+        SkRRect::new_rect_radii(
             rect,
-            rrect.radii().bottom_left as f32,
-            rrect.radii().top_left as f32,
-            rrect.radii().top_right as f32,
-            rrect.radii().bottom_right as f32,
+            &[
+                SkPoint::new(radii.top_left as f32, radii.top_left as f32),
+                SkPoint::new(radii.top_right as f32, radii.top_right as f32),
+                SkPoint::new(radii.bottom_right as f32, radii.bottom_right as f32),
+                SkPoint::new(radii.bottom_left as f32, radii.bottom_left as f32),
+            ],
         )
     }
 
