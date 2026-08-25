@@ -1,10 +1,28 @@
-use crate::VelloCpuScenePainter;
+use crate::{ImageCacheConfig, VelloCpuScenePainter};
 use anyrender::{ImageRenderer, RenderContext as AnyRenderContext};
 use debug_timer::debug_timer;
-use vello_cpu::{RenderContext, RenderMode, Resources};
+use vello_cpu::{PixmapMut, RenderContext};
 
 pub struct VelloCpuImageRenderer {
     scene: VelloCpuScenePainter,
+}
+
+impl VelloCpuImageRenderer {
+    /// Create a renderer with a custom image cache configuration.
+    pub fn with_image_cache_config(width: u32, height: u32, config: ImageCacheConfig) -> Self {
+        Self {
+            scene: VelloCpuScenePainter::with_image_cache_config(
+                width as u16,
+                height as u16,
+                config,
+            ),
+        }
+    }
+
+    /// Drop all cached image conversions.
+    pub fn clear_image_cache(&mut self) {
+        self.scene.clear_image_cache();
+    }
 }
 
 impl AnyRenderContext for VelloCpuImageRenderer {}
@@ -13,10 +31,7 @@ impl ImageRenderer for VelloCpuImageRenderer {
 
     fn new(width: u32, height: u32) -> Self {
         Self {
-            scene: VelloCpuScenePainter {
-                render_ctx: RenderContext::new(width as u16, height as u16),
-                resources: Resources::new(),
-            },
+            scene: VelloCpuScenePainter::new(width as u16, height as u16),
         }
     }
 
@@ -37,14 +52,19 @@ impl ImageRenderer for VelloCpuImageRenderer {
         self.scene.render_ctx.flush();
         timer.record_time("flush");
 
-        self.scene.render_ctx.render_to_buffer(
+        self.scene.render_ctx.render(
+            PixmapMut::new(
+                self.scene.render_ctx.width(),
+                self.scene.render_ctx.height(),
+                buffer,
+            )
+            .unwrap(),
             &mut self.scene.resources,
-            buffer,
-            self.scene.render_ctx.width(),
-            self.scene.render_ctx.height(),
-            RenderMode::OptimizeSpeed,
         );
         timer.record_time("render");
+
+        self.scene.maintain();
+        timer.record_time("maintain");
 
         timer.print_times("vello_cpu: ");
     }

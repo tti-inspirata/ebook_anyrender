@@ -115,8 +115,21 @@ pub(crate) fn to_bez_path(path: &usvg::Path) -> BezPath {
 }
 
 #[cfg(feature = "image")]
-pub(crate) fn into_image(image: image::ImageBuffer<image::Rgba<u8>, Vec<u8>>) -> ImageBrush {
+pub(crate) fn into_image(
+    image: image::ImageBuffer<image::Rgba<u8>, Vec<u8>>,
+    rendering_mode: usvg::ImageRendering,
+) -> ImageBrush {
     use peniko::ImageData;
+
+    let quality = match rendering_mode {
+        usvg::ImageRendering::HighQuality => peniko::ImageQuality::High,
+        usvg::ImageRendering::OptimizeQuality | usvg::ImageRendering::Smooth => {
+            peniko::ImageQuality::Medium
+        }
+        usvg::ImageRendering::OptimizeSpeed
+        | usvg::ImageRendering::CrispEdges
+        | usvg::ImageRendering::Pixelated => peniko::ImageQuality::Low,
+    };
 
     let (width, height) = (image.width(), image.height());
     let image_data: Vec<u8> = image.into_vec();
@@ -127,6 +140,7 @@ pub(crate) fn into_image(image: image::ImageBuffer<image::Rgba<u8>, Vec<u8>>) ->
         width,
         height,
     })
+    .with_quality(quality)
 }
 
 pub(crate) fn to_brush(paint: &usvg::Paint, opacity: usvg::Opacity) -> Option<(Paint, Affine)> {
@@ -166,7 +180,9 @@ pub(crate) fn to_brush(paint: &usvg::Paint, opacity: usvg::Opacity) -> Option<(P
             ]
             .map(f64::from);
             let transform = Affine::new(arr);
-            let gradient = peniko::Gradient::new_linear(start, end).with_stops(stops.as_slice());
+            let gradient = peniko::Gradient::new_linear(start, end)
+                .with_stops(stops.as_slice())
+                .with_extend(to_extend(gr.spread_method()));
             Some((Paint::Gradient(gradient), transform))
         }
         usvg::Paint::RadialGradient(gr) => {
@@ -184,9 +200,9 @@ pub(crate) fn to_brush(paint: &usvg::Paint, opacity: usvg::Opacity) -> Option<(P
                 })
                 .collect();
 
-            let start_center = Point::new(gr.cx() as f64, gr.cy() as f64);
-            let end_center = Point::new(gr.fx() as f64, gr.fy() as f64);
-            let start_radius = 0_f32;
+            let start_center = Point::new(gr.fx() as f64, gr.fy() as f64);
+            let end_center = Point::new(gr.cx() as f64, gr.cy() as f64);
+            let start_radius = gr.fr().get();
             let end_radius = gr.r().get();
             let arr = [
                 gr.transform().sx,
@@ -204,10 +220,19 @@ pub(crate) fn to_brush(paint: &usvg::Paint, opacity: usvg::Opacity) -> Option<(P
                 end_center,
                 end_radius,
             )
-            .with_stops(stops.as_slice());
+            .with_stops(stops.as_slice())
+            .with_extend(to_extend(gr.spread_method()));
             Some((Paint::Gradient(gradient), transform))
         }
         usvg::Paint::Pattern(_) => None,
+    }
+}
+
+fn to_extend(spread_method: usvg::SpreadMethod) -> peniko::Extend {
+    match spread_method {
+        usvg::SpreadMethod::Pad => peniko::Extend::Pad,
+        usvg::SpreadMethod::Reflect => peniko::Extend::Reflect,
+        usvg::SpreadMethod::Repeat => peniko::Extend::Repeat,
     }
 }
 
