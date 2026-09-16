@@ -61,6 +61,17 @@ impl VelloScenePainter<'_, '_> {
     }
 }
 
+/// Convert AnyRender's Y-down screen-space glyph transform to Vello's Y-up
+/// glyph-local coordinate space.
+///
+/// This is a change of basis, so both sides of the transform must be reflected:
+/// `FlipY * transform * FlipY`. In particular, an X shear changes sign while
+/// scale remains unchanged.
+fn to_vello_glyph_transform(transform: Affine) -> Affine {
+    let [a, b, c, d, e, f] = transform.as_coeffs();
+    Affine::new([a, -b, -c, d, e, -f])
+}
+
 impl PaintScene for VelloScenePainter<'_, '_> {
     fn reset(&mut self) {
         self.inner.reset();
@@ -161,7 +172,7 @@ impl PaintScene for VelloScenePainter<'_, '_> {
             .brush(paint.into())
             .brush_alpha(brush_alpha)
             .transform(transform)
-            .glyph_transform(glyph_transform)
+            .glyph_transform(glyph_transform.map(to_vello_glyph_transform))
             .draw(
                 style,
                 glyphs.map(|g: anyrender::Glyph| vello::Glyph {
@@ -182,5 +193,31 @@ impl PaintScene for VelloScenePainter<'_, '_> {
     ) {
         self.inner
             .draw_blurred_rounded_rect(transform, rect, brush, radius, std_dev);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::to_vello_glyph_transform;
+    use kurbo::Affine;
+
+    #[test]
+    fn converts_screen_space_glyph_transform_to_vello_space() {
+        let transform = Affine::new([2.0, 3.0, 4.0, 5.0, 6.0, 7.0]);
+
+        assert_eq!(
+            to_vello_glyph_transform(transform).as_coeffs(),
+            [2.0, -3.0, -4.0, 5.0, 6.0, -7.0]
+        );
+    }
+
+    #[test]
+    fn reverses_synthetic_oblique_shear_for_vello() {
+        let screen_space = Affine::skew(-0.25, 0.0);
+
+        assert_eq!(
+            to_vello_glyph_transform(screen_space).as_coeffs(),
+            Affine::skew(0.25, 0.0).as_coeffs()
+        );
     }
 }

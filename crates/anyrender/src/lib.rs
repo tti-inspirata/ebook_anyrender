@@ -227,7 +227,11 @@ pub trait PaintScene: RenderContext {
         shape: &impl Shape,
     );
 
-    /// Draws a run of glyphs
+    /// Draws a run of glyphs.
+    ///
+    /// `glyph_transform` is expressed in the same Y-down screen coordinate
+    /// space as `transform`. Backends whose glyph-local coordinate system is
+    /// Y-up must convert it at the backend boundary.
     #[allow(clippy::too_many_arguments)]
     fn draw_glyphs<'a, 's: 'a>(
         &'s mut self,
