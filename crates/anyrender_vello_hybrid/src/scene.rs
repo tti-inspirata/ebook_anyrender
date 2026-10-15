@@ -10,15 +10,26 @@ use vello_common::{
     geometry::RectU16,
     paint::{ImageId, ImageSource, PaintType},
 };
-use vello_hybrid::{Renderer, Resources, SampleRect};
+use vello_gpu::{Renderer, Resources};
 use wgpu::{CommandEncoder, Device, Queue, Texture, TextureView, TextureViewDescriptor};
 use wgpu_context::DeviceHandle;
 
 const DEFAULT_TOLERANCE: f64 = 0.1;
 
+/// Whether a glyph run drawn with the given transforms can use Vello's glyph atlas cache.
+///
+/// Vello only supports caching glyphs that are drawn upright with a uniform scale. It checks
+/// this itself when inserting a glyph into the atlas, but not when looking one up, so a skewed
+/// (e.g. synthetic italic) or rotated run would otherwise be drawn using upright cached glyphs.
+pub(crate) fn supports_glyph_caching(transform: Affine, glyph_transform: Option<Affine>) -> bool {
+    let [a, b, c, d, _, _] = (transform * glyph_transform.unwrap_or_default()).as_coeffs();
+    b == 0.0 && c == 0.0 && a == d && a > 0.0
+}
+
 fn anyrender_paint_to_vello_hybrid_paint<'a>(
     paint: PaintRef<'a>,
     image_manager: &mut ImageManager<'_>,
+    texture_bindings: &FxHashMap<ResourceId, TextureView>,
 ) -> PaintType {
     match paint {
         Paint::Solid(alpha_color) => PaintType::Solid(alpha_color),
@@ -36,8 +47,27 @@ fn anyrender_paint_to_vello_hybrid_paint<'a>(
             })
         }
 
+        Paint::Resource(brush) => match texture_bindings.get(&brush.image) {
+            Some(texture_view) => {
+                let texture = texture_view.texture();
+                PaintType::Image(ImageBrush {
+                    image: ImageSource::external_texture(
+                        TextureId(brush.image.into_ffi()),
+                        RectU16 {
+                            x0: 0,
+                            y0: 0,
+                            x1: texture.width().min(u16::MAX as u32) as u16,
+                            y1: texture.height().min(u16::MAX as u32) as u16,
+                        },
+                        true,
+                    ),
+                    sampler: brush.sampler,
+                })
+            }
+            None => PaintType::Solid(peniko::color::palette::css::TRANSPARENT),
+        },
+
         // TODO: custom paint
-        Paint::Resource(_) => PaintType::Solid(peniko::color::palette::css::TRANSPARENT),
         Paint::Custom(_) => PaintType::Solid(peniko::color::palette::css::TRANSPARENT),
     }
 }
@@ -106,16 +136,17 @@ pub(crate) enum LayerKind {
 }
 
 pub struct VelloHybridScenePainter<'s> {
-    pub(crate) scene: &'s mut vello_hybrid::Scene,
+    pub(crate) scene: &'s mut vello_gpu::Scene,
     pub(crate) layer_stack: Vec<LayerKind>,
     pub(crate) image_manager: ImageManager<'s>,
     pub(crate) texture_bindings: &'s mut FxHashMap<ResourceId, TextureView>,
     pub(crate) device_handle: &'s DeviceHandle,
+    pub(crate) glyph_caching: bool,
 }
 
 impl VelloHybridScenePainter<'_> {
     pub fn new<'s>(
-        scene: &'s mut vello_hybrid::Scene,
+        scene: &'s mut vello_gpu::Scene,
         image_manager: ImageManager<'s>,
         texture_bindings: &'s mut FxHashMap<ResourceId, TextureView>,
         device_handle: &'s DeviceHandle,
@@ -126,7 +157,22 @@ impl VelloHybridScenePainter<'_> {
             image_manager,
             texture_bindings,
             device_handle,
+            glyph_caching: false,
         }
+    }
+
+    /// Enable or disable caching of rasterized glyphs in Vello's glyph atlas.
+    ///
+    /// Defaults to `false`.
+    ///
+    /// Note: Vello considers atlas-backed glyph caching experimental.
+    pub fn with_glyph_caching(mut self, enabled: bool) -> Self {
+        self.glyph_caching = enabled;
+        self
+    }
+
+    fn convert_paint(&mut self, paint: PaintRef<'_>) -> PaintType {
+        anyrender_paint_to_vello_hybrid_paint(paint, &mut self.image_manager, self.texture_bindings)
     }
 }
 
@@ -174,6 +220,7 @@ impl PaintScene for VelloHybridScenePainter<'_> {
 
     fn push_layer(
         &mut self,
+        fill: Fill,
         blend: impl Into<BlendMode>,
         alpha: f32,
         transform: Affine,
@@ -183,18 +230,28 @@ impl PaintScene for VelloHybridScenePainter<'_> {
     ) {
         let filter = filter.and_then(crate::filters::convert_filter);
         self.scene.set_transform(transform);
+        self.scene.set_fill_rule(fill);
         self.layer_stack.push(LayerKind::Layer);
-        self.scene
-            .push_clip_path(&clip.into_path(DEFAULT_TOLERANCE));
+        if let Some(rect) = clip.as_rect() {
+            self.scene.push_clip_rect(&rect);
+        } else {
+            self.scene
+                .push_clip_path(&clip.into_path(DEFAULT_TOLERANCE));
+        }
         self.scene
             .push_layer(None, Some(blend.into()), Some(alpha), None, filter);
     }
 
-    fn push_clip_layer(&mut self, transform: Affine, clip: &impl Shape) {
+    fn push_clip_layer(&mut self, fill: Fill, transform: Affine, clip: &impl Shape) {
         self.scene.set_transform(transform);
+        self.scene.set_fill_rule(fill);
         self.layer_stack.push(LayerKind::Clip);
-        self.scene
-            .push_clip_path(&clip.into_path(DEFAULT_TOLERANCE));
+        if let Some(rect) = clip.as_rect() {
+            self.scene.push_clip_rect(&rect);
+        } else {
+            self.scene
+                .push_clip_path(&clip.into_path(DEFAULT_TOLERANCE));
+        }
     }
 
     fn pop_layer(&mut self) {
@@ -202,9 +259,9 @@ impl PaintScene for VelloHybridScenePainter<'_> {
             match kind {
                 LayerKind::Layer => {
                     self.scene.pop_layer();
-                    self.scene.pop_clip_path();
+                    self.scene.pop_clip();
                 }
-                LayerKind::Clip => self.scene.pop_clip_path(),
+                LayerKind::Clip => self.scene.pop_clip(),
             }
         }
     }
@@ -219,7 +276,7 @@ impl PaintScene for VelloHybridScenePainter<'_> {
     ) {
         self.scene.set_transform(transform);
         self.scene.set_stroke(style.clone());
-        let paint = anyrender_paint_to_vello_hybrid_paint(paint.into(), &mut self.image_manager);
+        let paint = self.convert_paint(paint.into());
         self.scene.set_paint(paint);
         self.scene
             .set_paint_transform(brush_transform.unwrap_or(Affine::IDENTITY));
@@ -236,40 +293,14 @@ impl PaintScene for VelloHybridScenePainter<'_> {
     ) {
         self.scene.set_transform(transform);
         self.scene.set_fill_rule(style);
-        let paint = paint.into();
-
-        match paint {
-            Paint::Resource(brush) => {
-                if let Some(texture_view) = self.texture_bindings.get(&brush.image) {
-                    let texture_id = TextureId(brush.image.into_ffi());
-
-                    let src_width = texture_view.texture().width();
-                    let src_height = texture_view.texture().height();
-
-                    let rect = shape.bounding_box();
-
-                    self.scene.draw_texture_rects(
-                        texture_id,
-                        brush.sampler.quality,
-                        [SampleRect {
-                            source_region: RectU16 {
-                                x0: 0,
-                                y0: 0,
-                                x1: src_width as u16,
-                                y1: src_height as u16,
-                            },
-                            transform: Affine::translate(rect.origin().to_vec2()),
-                        }],
-                    );
-                }
-            }
-            _ => {
-                let paint = anyrender_paint_to_vello_hybrid_paint(paint, &mut self.image_manager);
-                self.scene.set_paint(paint);
-                self.scene
-                    .set_paint_transform(brush_transform.unwrap_or(Affine::IDENTITY));
-                self.scene.fill_path(&shape.into_path(DEFAULT_TOLERANCE));
-            }
+        let paint = self.convert_paint(paint.into());
+        self.scene.set_paint(paint);
+        self.scene
+            .set_paint_transform(brush_transform.unwrap_or(Affine::IDENTITY));
+        if let Some(rect) = shape.as_rect() {
+            self.scene.fill_rect(&rect);
+        } else {
+            self.scene.fill_path(&shape.into_path(DEFAULT_TOLERANCE));
         }
     }
 
@@ -287,16 +318,21 @@ impl PaintScene for VelloHybridScenePainter<'_> {
         glyph_transform: Option<Affine>,
         glyphs: impl Iterator<Item = anyrender::Glyph> + Clone,
     ) {
-        let paint = anyrender_paint_to_vello_hybrid_paint(paint.into(), &mut self.image_manager);
+        let paint = self.convert_paint(paint.into());
         self.scene.set_paint(paint);
+        self.scene.reset_paint_transform();
         self.scene.set_transform(transform);
 
+        let glyph_caching =
+            self.glyph_caching && supports_glyph_caching(transform, glyph_transform);
         let style: StyleRef<'a> = style.into();
         match style {
             StyleRef::Fill(fill) => {
                 self.scene.set_fill_rule(fill);
-                self.scene
+                let _ = self
+                    .scene
                     .glyph_run(self.image_manager.resources, font)
+                    .atlas_cache(glyph_caching)
                     .font_size(font_size)
                     .hint(hint)
                     .normalized_coords(normalized_coords)
@@ -310,8 +346,10 @@ impl PaintScene for VelloHybridScenePainter<'_> {
             }
             StyleRef::Stroke(stroke) => {
                 self.scene.set_stroke(stroke.clone());
-                self.scene
+                let _ = self
+                    .scene
                     .glyph_run(self.image_manager.resources, font)
+                    .atlas_cache(glyph_caching)
                     .font_size(font_size)
                     .hint(hint)
                     .normalized_coords(normalized_coords)
@@ -334,6 +372,7 @@ impl PaintScene for VelloHybridScenePainter<'_> {
     ) {
         self.scene.set_transform(transform);
         self.scene.set_paint(PaintType::Solid(color));
+        self.scene.reset_paint_transform();
         self.scene
             .fill_blurred_rounded_rect(&rect, radius as f32, std_dev as f32, false);
     }

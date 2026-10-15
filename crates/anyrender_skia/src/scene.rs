@@ -113,15 +113,16 @@ impl SkiaScenePainter<'_> {
         self.inner.concat(&sk_kurbo::matrix_from_affine(transform));
     }
 
-    fn clip(&self, shape: &impl kurbo::Shape) {
+    fn clip(&self, fill: peniko::Fill, shape: &impl kurbo::Shape) {
         if let Some(rect) = shape.as_rect() {
             self.inner.clip_rect(sk_kurbo::rect_from(rect), None, true);
         } else if let Some(rrect) = shape.as_rounded_rect() {
             self.inner
                 .clip_rrect(sk_kurbo::rrect_from(rrect), None, true);
         } else {
-            self.inner
-                .clip_path(&sk_kurbo::path_from_shape(shape), None, true);
+            let mut path = sk_kurbo::path_from_shape(shape);
+            path.set_fill_type(sk_peniko::path_fill_type_from_fill(fill));
+            self.inner.clip_path(&path, None, true);
         }
     }
 
@@ -279,6 +280,7 @@ impl SkiaScenePainter<'_> {
         } else {
             FontHinting::None
         });
+        font.set_subpixel(true);
         font.set_edging(Edging::SubpixelAntiAlias);
 
         self.cache.font.insert(cache_key, font.clone());
@@ -398,7 +400,7 @@ impl SkiaScenePainter<'_> {
         let Some(typeface) = self
             .cache
             .font_mgr
-            .new_from_data(font.data.data(), font.index as usize)
+            .new_from_bytes(font.data.data(), font.index)
         else {
             let tf = Typeface::make_deserialize(font.data.data(), None);
             eprintln!(
@@ -425,6 +427,7 @@ impl PaintScene for SkiaScenePainter<'_> {
 
     fn push_layer(
         &mut self,
+        fill: peniko::Fill,
         blend: impl Into<peniko::BlendMode>,
         alpha: f32,
         transform: kurbo::Affine,
@@ -445,7 +448,7 @@ impl PaintScene for SkiaScenePainter<'_> {
         self.inner.save();
 
         self.set_matrix(transform);
-        self.clip(clip);
+        self.clip(fill, clip);
 
         let backdrop_filter = backdrop_filter.as_ref().and_then(|f| convert_filter(f));
         let mut save_layer_rec = SaveLayerRec::default().paint(&self.cache.paint);
@@ -456,11 +459,16 @@ impl PaintScene for SkiaScenePainter<'_> {
         self.inner.save_layer(&save_layer_rec);
     }
 
-    fn push_clip_layer(&mut self, transform: kurbo::Affine, clip: &impl kurbo::Shape) {
+    fn push_clip_layer(
+        &mut self,
+        fill: peniko::Fill,
+        transform: kurbo::Affine,
+        clip: &impl kurbo::Shape,
+    ) {
         self.inner.save(); // we need to do two saves because of pop_layer
 
         self.set_matrix(transform);
-        self.clip(clip);
+        self.clip(fill, clip);
         self.inner.save();
     }
 
