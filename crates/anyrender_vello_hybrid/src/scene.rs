@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use crate::ImageCache;
 use anyrender::{Filter, NormalizedCoord, Paint, PaintRef, PaintScene, RenderContext, ResourceId};
 use glifo::FontEmbolden;
 use kurbo::{Affine, Diagonal2, Rect, Shape, Stroke};
@@ -26,6 +27,80 @@ pub(crate) fn supports_glyph_caching(transform: Affine, glyph_transform: Option<
     b == 0.0 && c == 0.0 && a == d && a > 0.0
 }
 
+/// Snaps glyph origins to the horizontal subpixel grid of the platform's native text renderer.
+///
+/// CoreGraphics (and so Safari and other native Apple text) floors each glyph origin's device x
+/// to a grid that depends on the device font size: 1/4px at 9-11ppem, 1/3px at 12-16ppem, 1/2px
+/// at 17-33ppem and whole pixels from 34ppem. Vello positions glyphs continuously, so without
+/// this, stems land up to 1/2px away from native ones. Elsewhere, x is rounded to the nearest
+/// 1/4px, as Skia does for horizontal text (and so Chrome off Apple). Only x is snapped.
+///
+/// CoreGraphics font smoothing also dilates glyphs upwards only: stems grow by the same amount
+/// on both sides in x, but the bottom edge stays on the baseline and the top grows by twice
+/// that. Vello's embolden grows both sides in y, so emboldened glyphs are raised by the
+/// vertical embolden amount, which keeps baselines and other bottom edges as crisp as native.
+#[derive(Clone, Copy)]
+pub(crate) struct GlyphOriginSnap {
+    scale_x: f64,
+    offset_x: f64,
+    positions_per_px: f64,
+    /// Skia rounds to the nearest grid position; CoreGraphics floors.
+    round_x: f64,
+    lift_y: f64,
+}
+
+impl GlyphOriginSnap {
+    pub(crate) fn new(transform: Affine, font_size: f32, embolden: kurbo::Vec2) -> Option<Self> {
+        if cfg!(any(target_os = "macos", target_os = "ios")) {
+            Self::core_graphics(transform, font_size, embolden)
+        } else {
+            Self::skia(transform)
+        }
+    }
+
+    fn skia(transform: Affine) -> Option<Self> {
+        let [a, b, c, _, e, _] = transform.as_coeffs();
+        if b != 0.0 || c != 0.0 || a <= 0.0 {
+            return None;
+        }
+        Some(Self {
+            scale_x: a,
+            offset_x: e,
+            positions_per_px: 4.0,
+            round_x: 0.5,
+            lift_y: 0.0,
+        })
+    }
+
+    fn core_graphics(transform: Affine, font_size: f32, embolden: kurbo::Vec2) -> Option<Self> {
+        let [a, b, c, d, e, _] = transform.as_coeffs();
+        let ppem = font_size as f64 * d.abs();
+        if b != 0.0 || c != 0.0 || a <= 0.0 || !ppem.is_finite() || ppem <= 0.0 {
+            return None;
+        }
+        Some(Self {
+            scale_x: a,
+            offset_x: e,
+            // CoreGraphics' grid gets coarser as glyphs grow: n = ceil(100 / (3 * ppem)), at most 5.
+            positions_per_px: (100.0 / (3.0 * ppem)).ceil().min(5.0),
+            round_x: 0.0,
+            // The embolden amount is in device pixels; device y points down.
+            lift_y: embolden.y / d,
+        })
+    }
+
+    pub(crate) fn x(self, x: f32) -> f32 {
+        let device_x = self.scale_x * x as f64 + self.offset_x;
+        let snapped =
+            (device_x * self.positions_per_px + self.round_x).floor() / self.positions_per_px;
+        ((snapped - self.offset_x) / self.scale_x) as f32
+    }
+
+    pub(crate) fn y(self, y: f32) -> f32 {
+        (y as f64 - self.lift_y) as f32
+    }
+}
+
 fn anyrender_paint_to_vello_hybrid_paint<'a>(
     paint: PaintRef<'a>,
     image_manager: &mut ImageManager<'_>,
@@ -36,7 +111,9 @@ fn anyrender_paint_to_vello_hybrid_paint<'a>(
         Paint::Gradient(gradient) => PaintType::Gradient(gradient.clone()),
 
         Paint::Image(image_brush) => {
-            let image_id = image_manager.upload_image(image_brush.image);
+            let Some(image_id) = image_manager.upload_image(image_brush.image) else {
+                return PaintType::Solid(Color::TRANSPARENT);
+            };
             PaintType::Image(ImageBrush {
                 image: ImageSource::OpaqueId {
                     id: image_id,
@@ -78,7 +155,7 @@ pub struct ImageManager<'a> {
     pub(crate) device: &'a Device,
     pub(crate) queue: &'a Queue,
     pub(crate) encoder: &'a mut CommandEncoder,
-    pub(crate) cache: &'a mut FxHashMap<u64, ImageId>,
+    pub(crate) cache: &'a mut ImageCache,
 }
 
 impl<'a> ImageManager<'a> {
@@ -88,7 +165,7 @@ impl<'a> ImageManager<'a> {
         device: &'a Device,
         queue: &'a Queue,
         encoder: &'a mut CommandEncoder,
-        cache: &'a mut FxHashMap<u64, ImageId>,
+        cache: &'a mut ImageCache,
     ) -> Self {
         Self {
             renderer,
@@ -100,12 +177,15 @@ impl<'a> ImageManager<'a> {
         }
     }
 
-    pub(crate) fn upload_image(&mut self, image: &ImageData) -> ImageId {
+    pub(crate) fn upload_image(&mut self, image: &ImageData) -> Option<ImageId> {
+        if !self.cache.fits(image.width, image.height) {
+            return None;
+        }
         let peniko_id = image.data.id();
 
         // Try to get ImageId from cache first
-        if let Some(atlas_id) = self.cache.get(&peniko_id) {
-            return *atlas_id;
+        if let Some(atlas_id) = self.cache.get(peniko_id) {
+            return Some(atlas_id);
         };
 
         // Convert ImageData to Pixmap
@@ -123,10 +203,19 @@ impl<'a> ImageManager<'a> {
         );
 
         // Store ImageId in cache
-        self.cache.insert(peniko_id, atlas_id);
+        self.cache
+            .insert(&image.data, atlas_id, image.width, image.height);
 
         // Return ImageId
-        atlas_id
+        Some(atlas_id)
+    }
+
+    /// Evict unused images after encoding the frame's rendering, before submitting the encoder.
+    pub fn finish_frame(&mut self) {
+        for id in self.cache.finish_frame() {
+            self.renderer
+                .destroy_image(self.resources, self.encoder, id);
+        }
     }
 }
 
@@ -325,6 +414,7 @@ impl PaintScene for VelloHybridScenePainter<'_> {
 
         let glyph_caching =
             self.glyph_caching && supports_glyph_caching(transform, glyph_transform);
+        let snap = GlyphOriginSnap::new(transform, font_size, embolden);
         let style: StyleRef<'a> = style.into();
         match style {
             StyleRef::Fill(fill) => {
@@ -340,8 +430,8 @@ impl PaintScene for VelloHybridScenePainter<'_> {
                     .glyph_transform(glyph_transform.unwrap_or_default())
                     .fill_glyphs(glyphs.map(|g| glifo::Glyph {
                         id: g.id,
-                        x: g.x,
-                        y: g.y,
+                        x: snap.map_or(g.x, |snap| snap.x(g.x)),
+                        y: snap.map_or(g.y, |snap| snap.y(g.y)),
                     }));
             }
             StyleRef::Stroke(stroke) => {
@@ -356,8 +446,8 @@ impl PaintScene for VelloHybridScenePainter<'_> {
                     .glyph_transform(glyph_transform.unwrap_or_default())
                     .stroke_glyphs(glyphs.map(|g| glifo::Glyph {
                         id: g.id,
-                        x: g.x,
-                        y: g.y,
+                        x: snap.map_or(g.x, |snap| snap.x(g.x)),
+                        y: snap.map_or(g.y, |snap| snap.y(g.y)),
                     }));
             }
         }
@@ -375,5 +465,77 @@ impl PaintScene for VelloHybridScenePainter<'_> {
         self.scene.reset_paint_transform();
         self.scene
             .fill_blurred_rounded_rect(&rect, radius as f32, std_dev as f32, false);
+    }
+}
+
+#[cfg(test)]
+mod glyph_origin_snap_tests {
+    use super::GlyphOriginSnap;
+    use kurbo::Affine;
+
+    fn snapped_device_x(transform: Affine, font_size: f32, x: f32) -> f64 {
+        let snap = GlyphOriginSnap::core_graphics(transform, font_size, kurbo::Vec2::ZERO).unwrap();
+        transform.as_coeffs()[0] * snap.x(x) as f64 + transform.as_coeffs()[4]
+    }
+
+    #[test]
+    fn grid_depends_on_device_ppem() {
+        for (ppem, step) in [
+            (8.0, 0.2),
+            (11.0, 0.25),
+            (12.0, 1.0 / 3.0),
+            (16.0, 1.0 / 3.0),
+            (17.0, 0.5),
+            (33.0, 0.5),
+            (34.0, 1.0),
+            (72.0, 1.0),
+        ] {
+            let snap =
+                GlyphOriginSnap::core_graphics(Affine::IDENTITY, ppem, kurbo::Vec2::ZERO).unwrap();
+            assert_eq!(snap.positions_per_px, (1.0f64 / step).round(), "{ppem}ppem");
+        }
+    }
+
+    #[test]
+    fn floors_device_x() {
+        assert_eq!(snapped_device_x(Affine::IDENTITY, 11.0, 10.7), 10.5);
+        assert_eq!(snapped_device_x(Affine::IDENTITY, 16.0, 10.3), 10.0);
+        assert_eq!(snapped_device_x(Affine::IDENTITY, 40.0, 10.9), 10.0);
+        // 8px at 2x is 16 device ppem, so a 1/3 device px grid.
+        let transform = Affine::translate((3.0, 0.0)) * Affine::scale(2.0);
+        assert!((snapped_device_x(transform, 8.0, 5.2) - 13.333333).abs() < 1e-4);
+    }
+
+    #[test]
+    fn rounds_device_x_to_quarter_px_for_skia() {
+        let device_x = |transform: Affine, x: f32| {
+            let snap = GlyphOriginSnap::skia(transform).unwrap();
+            transform.as_coeffs()[0] * snap.x(x) as f64 + transform.as_coeffs()[4]
+        };
+        assert_eq!(device_x(Affine::IDENTITY, 10.1), 10.0);
+        assert_eq!(device_x(Affine::IDENTITY, 10.2), 10.25);
+        assert_eq!(device_x(Affine::IDENTITY, 10.9), 11.0);
+        let transform = Affine::translate((3.0, 0.0)) * Affine::scale(2.0);
+        assert_eq!(device_x(transform, 5.2), 13.5);
+        assert!(GlyphOriginSnap::skia(Affine::rotate(0.5)).is_none());
+    }
+
+    #[test]
+    fn raises_emboldened_glyphs_by_vertical_embolden() {
+        let embolden = kurbo::Vec2::new(0.1, 0.3);
+        let snap = GlyphOriginSnap::core_graphics(Affine::IDENTITY, 16.0, embolden).unwrap();
+        assert!((snap.y(10.0) - 9.7).abs() < 1e-6);
+        // At 2x, a 0.3 device px lift is 0.15 user units.
+        let snap = GlyphOriginSnap::core_graphics(Affine::scale(2.0), 8.0, embolden).unwrap();
+        assert!((snap.y(10.0) - 9.85).abs() < 1e-6);
+        let snap = GlyphOriginSnap::core_graphics(Affine::IDENTITY, 16.0, kurbo::Vec2::ZERO);
+        assert_eq!(snap.unwrap().y(10.0), 10.0);
+    }
+
+    #[test]
+    fn skips_rotated_runs() {
+        assert!(
+            GlyphOriginSnap::core_graphics(Affine::rotate(0.3), 16.0, kurbo::Vec2::ZERO).is_none()
+        );
     }
 }

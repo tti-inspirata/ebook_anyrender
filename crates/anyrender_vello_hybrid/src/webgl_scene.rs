@@ -6,8 +6,8 @@ use kurbo::{Affine, Diagonal2, Rect, Shape, Stroke};
 use peniko::{BlendMode, Color, Fill, FontData, StyleRef};
 use vello_common::paint::PaintType;
 
+use crate::ImageCache;
 use peniko::ImageBrush;
-use rustc_hash::FxHashMap;
 use vello_common::paint::{ImageId, ImageSource};
 
 use std::sync::Arc;
@@ -17,14 +17,14 @@ const DEFAULT_TOLERANCE: f64 = 0.1;
 pub struct WebGlImageManager<'a> {
     pub(crate) renderer: &'a mut vello_gpu::WebGlRenderer,
     pub(crate) resources: &'a mut vello_gpu::Resources,
-    pub(crate) cache: &'a mut FxHashMap<u64, ImageId>,
+    pub(crate) cache: &'a mut ImageCache,
 }
 
 impl<'a> WebGlImageManager<'a> {
     pub fn new(
         renderer: &'a mut vello_gpu::WebGlRenderer,
         resources: &'a mut vello_gpu::Resources,
-        cache: &'a mut FxHashMap<u64, ImageId>,
+        cache: &'a mut ImageCache,
     ) -> Self {
         Self {
             renderer,
@@ -36,11 +36,14 @@ impl<'a> WebGlImageManager<'a> {
     pub(crate) fn upload_image(
         &mut self,
         image: &peniko::ImageData,
-    ) -> Result<ImageId, vello_gpu::WebGlError> {
+    ) -> Result<Option<ImageId>, vello_gpu::WebGlError> {
+        if !self.cache.fits(image.width, image.height) {
+            return Ok(None);
+        }
         let peniko_id = image.data.id();
 
-        if let Some(atlas_id) = self.cache.get(&peniko_id) {
-            return Ok(*atlas_id);
+        if let Some(atlas_id) = self.cache.get(peniko_id) {
+            return Ok(Some(atlas_id));
         }
 
         let ImageSource::Pixmap(pixmap) = ImageSource::from_peniko_image_data(image) else {
@@ -48,8 +51,20 @@ impl<'a> WebGlImageManager<'a> {
         };
 
         let atlas_id = self.renderer.upload_image(self.resources, &pixmap)?;
-        self.cache.insert(peniko_id, atlas_id);
-        Ok(atlas_id)
+        self.cache
+            .insert(&image.data, atlas_id, image.width, image.height);
+        Ok(Some(atlas_id))
+    }
+
+    /// Evict unused images after rendering a frame, including skipped frames.
+    pub fn finish_frame(&mut self) -> Result<(), vello_gpu::WebGlError> {
+        let mut result = Ok(());
+        for id in self.cache.finish_frame() {
+            if let Err(error) = self.renderer.destroy_image(self.resources, id) {
+                result = Err(error);
+            }
+        }
+        result
     }
 }
 
@@ -100,7 +115,7 @@ impl WebGlScenePainter<'_> {
     }
 
     fn convert_image_paint(&mut self, image_brush: peniko::ImageBrushRef<'_>) -> PaintType {
-        let Ok(image_id) = self.image_manager.upload_image(image_brush.image) else {
+        let Ok(Some(image_id)) = self.image_manager.upload_image(image_brush.image) else {
             return PaintType::Solid(Color::TRANSPARENT);
         };
         PaintType::Image(ImageBrush {

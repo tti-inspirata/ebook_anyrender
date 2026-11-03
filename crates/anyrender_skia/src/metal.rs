@@ -4,6 +4,7 @@ use objc2::{rc::Retained, runtime::ProtocolObject};
 #[cfg(target_os = "macos")]
 use objc2_app_kit::NSView;
 use objc2_core_foundation::CGSize;
+use objc2_core_graphics::{CGColorSpace, kCGColorSpaceSRGB};
 use objc2_metal::{MTLCommandBuffer, MTLCommandQueue, MTLCreateSystemDefaultDevice, MTLDevice};
 use objc2_quartz_core::{CAMetalDrawable, CAMetalLayer};
 #[cfg(target_os = "ios")]
@@ -14,7 +15,7 @@ use skia_safe::{
     scalar,
 };
 
-use crate::window_renderer::SkiaBackend;
+use crate::{BackendError, window_renderer::SkiaBackend};
 
 pub struct MetalBackend {
     pub metal_layer: Retained<CAMetalLayer>,
@@ -29,8 +30,9 @@ impl MetalBackend {
         width: u32,
         height: u32,
         composite_alpha_mode: anyrender::CompositeAlphaMode,
-    ) -> Self {
-        let device = MTLCreateSystemDefaultDevice().expect("no device found");
+    ) -> Result<Self, BackendError> {
+        let device = MTLCreateSystemDefaultDevice()
+            .ok_or_else(|| BackendError::new("No Metal device found"))?;
 
         let metal_layer = {
             let layer = CAMetalLayer::new();
@@ -45,8 +47,12 @@ impl MetalBackend {
             // More about: https://developer.apple.com/documentation/quartzcore/cametallayer/1478168-framebufferonly
             layer.setFramebufferOnly(false);
             layer.setDrawableSize(CGSize::new(width as f64, height as f64));
+            // Without a colorspace macOS shows the sRGB values Skia renders unconverted
+            // in the display's native space (Display P3 on most Macs).
+            let srgb = CGColorSpace::with_name(Some(unsafe { kCGColorSpaceSRGB }));
+            layer.setColorspace(srgb.as_deref());
 
-            let view_ptr = match window.window_handle().unwrap().as_raw() {
+            let view_ptr = match window.window_handle().map_err(BackendError::new)?.as_raw() {
                 #[cfg(target_os = "macos")]
                 raw_window_handle::RawWindowHandle::AppKit(appkit) => {
                     appkit.ns_view.as_ptr() as *mut NSView
@@ -55,9 +61,10 @@ impl MetalBackend {
                 raw_window_handle::RawWindowHandle::UiKit(uikit) => {
                     uikit.ui_view.as_ptr() as *mut UIView
                 }
-                _ => panic!("Wrong window handle type"),
+                _ => return Err(BackendError::new("Wrong window handle type for Metal")),
             };
-            let view = unsafe { view_ptr.as_ref().unwrap() };
+            let view =
+                unsafe { view_ptr.as_ref() }.ok_or_else(|| BackendError::new("Null Metal view"))?;
 
             #[cfg(target_os = "macos")]
             {
@@ -78,7 +85,7 @@ impl MetalBackend {
 
         let command_queue = device
             .newCommandQueue()
-            .expect("unable to get command queue");
+            .ok_or_else(|| BackendError::new("Unable to get Metal command queue"))?;
 
         let backend = unsafe {
             mtl::BackendContext::new(
@@ -87,14 +94,15 @@ impl MetalBackend {
             )
         };
 
-        let skia_context = gpu::direct_contexts::make_metal(&backend, None).unwrap();
+        let skia_context = gpu::direct_contexts::make_metal(&backend, None)
+            .ok_or_else(|| BackendError::new("Failed to create Skia Metal context"))?;
 
-        Self {
+        Ok(Self {
             metal_layer,
             command_queue,
             skia: skia_context,
             prepared_drawable: None,
-        }
+        })
     }
 }
 
@@ -128,7 +136,7 @@ impl SkiaBackend for MetalBackend {
                 SurfaceOrigin::TopLeft,
                 ColorType::BGRA8888,
                 None,
-                None,
+                Some(&crate::surface_props()),
             )
             .unwrap()
         };
@@ -139,7 +147,7 @@ impl SkiaBackend for MetalBackend {
     }
 
     fn flush(&mut self, surface: Surface) {
-        self.skia.flush_and_submit();
+        self.skia.flush_and_submit().expect("Skia GPU flush failed");
         drop(surface);
         let command_buffer = self
             .command_queue

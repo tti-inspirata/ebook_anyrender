@@ -10,7 +10,7 @@ use anyrender::filters::{Filter, FilterEffect, FilterId, FilterInput};
 use anyrender::{PaintScene, RenderContext};
 use peniko::color::AlphaColor;
 use skia_safe::{
-    BlendMode as SkBlendMode, BlurStyle, Canvas, Color, ColorSpace, Font, FontArguments,
+    BlendMode as SkBlendMode, BlurStyle, Canvas, Color, ColorSpace, Data, Font, FontArguments,
     FontHinting, FontMgr, GlyphId, ImageFilter, MaskFilter, Paint, PaintCap, PaintJoin, PaintStyle,
     PathEffect, Point, Point3, RRect, Rect, Shader, Typeface,
     canvas::{GlyphPositions, SaveLayerRec},
@@ -31,9 +31,7 @@ pub struct SkiaSceneCache {
     extracted_font_data: GenerationalCache<(u64, u32), peniko::FontData>,
     typeface: GenerationalCache<(u64, u32), Typeface>,
     normalized_typeface: GenerationalCache<NormalizedTypefaceCacheKey, Typeface>,
-    // The `Blob` is held alongside the `Shader` because the shader references the
-    // image pixels without owning them (see `shader_from_image_brush`).
-    image_shader: GenerationalCache<u64, (Shader, peniko::Blob<u8>)>,
+    image_shader: GenerationalCache<u64, Shader>,
     font: GenerationalCache<FontCacheKey, Font>,
     font_mgr: FontMgr,
     glyph_id_buf: Vec<GlyphId>,
@@ -91,7 +89,9 @@ impl SkiaScenePainter<'_> {
         self.cache.paint.set_anti_alias(true);
     }
 
+    /// Multiplies the paint's alpha (including a solid brush's own alpha) by `alpha`.
     fn set_paint_alpha(&mut self, alpha: f32) {
+        let alpha = self.cache.paint.alpha_f() * alpha;
         self.cache.paint.set_alpha_f(alpha);
     }
 
@@ -145,8 +145,7 @@ impl SkiaScenePainter<'_> {
                     .set_shader(sk_peniko::shader_from_gradient(gradient, brush_transform));
             }
             anyrender::Paint::Image(image_brush) => {
-                if let Some((shader, _)) = self.cache.image_shader.hit(&image_brush.image.data.id())
-                {
+                if let Some(shader) = self.cache.image_shader.hit(&image_brush.image.data.id()) {
                     self.cache.paint.set_shader(shader.clone());
                     return;
                 }
@@ -154,10 +153,9 @@ impl SkiaScenePainter<'_> {
                 let image_shader = sk_peniko::shader_from_image_brush(image_brush, brush_transform);
 
                 if let Some(shader) = &image_shader {
-                    self.cache.image_shader.insert(
-                        image_brush.image.data.id(),
-                        (shader.clone(), image_brush.image.data.clone()),
-                    );
+                    self.cache
+                        .image_shader
+                        .insert(image_brush.image.data.id(), shader.clone());
                 }
 
                 self.cache.paint.set_shader(image_shader);
@@ -276,7 +274,13 @@ impl SkiaScenePainter<'_> {
 
         let mut font = Font::from_typeface(typeface, font_size);
         font.set_hinting(if hint {
-            FontHinting::Normal
+            // Slight (vertical-only) hinting is the fontconfig default, and what Chrome and
+            // Firefox use on Linux. Full hinting distorts glyph shapes at small sizes.
+            if crate::FREETYPE_TEXT {
+                FontHinting::Slight
+            } else {
+                FontHinting::Normal
+            }
         } else {
             FontHinting::None
         });
@@ -321,23 +325,21 @@ impl SkiaScenePainter<'_> {
             return Some(typeface);
         }
 
-        let coordinates: Vec<Coordinate> = axes
-            .iter()
-            .zip(normalized_coords.iter().map(|c| f2dot14_to_f32(*c)))
-            .filter(|(_, value)| *value != 0.0)
-            .map(|(axis, factor)| {
-                let value = if factor < 0.0 {
-                    lerp_f32(axis.min, axis.def, -factor)
-                } else {
-                    lerp_f32(axis.def, axis.max, factor)
-                };
-
-                Coordinate {
-                    axis: axis.tag,
-                    value,
-                }
-            })
-            .collect();
+        let coordinates = design_coordinates(font.data.data(), font.index, normalized_coords)
+            .unwrap_or_else(|| {
+                axes.iter()
+                    .zip(normalized_coords.iter().map(|c| f2dot14_to_f32(*c)))
+                    .filter(|(_, value)| *value != 0.0)
+                    .map(|(axis, factor)| Coordinate {
+                        axis: axis.tag,
+                        value: if factor < 0.0 {
+                            lerp_f32(axis.def, axis.min, -factor)
+                        } else {
+                            lerp_f32(axis.def, axis.max, factor)
+                        },
+                    })
+                    .collect()
+            });
         let variation_position = VariationPosition {
             coordinates: &coordinates,
         };
@@ -400,7 +402,7 @@ impl SkiaScenePainter<'_> {
         let Some(typeface) = self
             .cache
             .font_mgr
-            .new_from_bytes(font.data.data(), font.index)
+            .new_from_data(Data::new_with_owner(font.data.clone()), font.index)
         else {
             let tf = Typeface::make_deserialize(font.data.data(), None);
             eprintln!(
@@ -515,7 +517,7 @@ impl PaintScene for SkiaScenePainter<'_> {
         font_size: f32,
         hint: bool,
         normalized_coords: &'a [anyrender::NormalizedCoord],
-        _embolden: kurbo::Vec2,
+        embolden: kurbo::Vec2,
         style: impl Into<peniko::StyleRef<'a>>,
         brush: impl Into<anyrender::PaintRef<'a>>,
         brush_alpha: f32,
@@ -533,6 +535,12 @@ impl PaintScene for SkiaScenePainter<'_> {
         self.set_paint_brush(brush, None);
         self.set_paint_style(style);
         self.set_paint_alpha(brush_alpha);
+
+        // CoreText doesn't hint outlines, and Skia only uses the hinting level there to decide
+        // whether to request CoreText font smoothing (stem dilation). Request it for emboldened
+        // text, which is how callers ask for the native macOS look.
+        let hint = hint
+            || (cfg!(any(target_os = "macos", target_os = "ios")) && embolden != kurbo::Vec2::ZERO);
 
         let Some(font) = self.get_or_cache_font(font, normalized_coords, font_size, hint) else {
             return;
@@ -594,6 +602,52 @@ impl PaintScene for SkiaScenePainter<'_> {
 
         self.inner.draw_rrect(rrect, &self.cache.paint);
     }
+}
+
+/// The design-space position of `normalized_coords`, which carry the font's `avar` mapping
+/// (shapers such as parley and harfrust normalize through it). Skia takes design coordinates and
+/// applies `avar` itself, so the mapping is inverted per axis by bisection; it is monotonic.
+fn design_coordinates(
+    data: &[u8],
+    index: u32,
+    normalized_coords: &[anyrender::NormalizedCoord],
+) -> Option<Vec<Coordinate>> {
+    use skrifa::{FontRef, MetadataProvider};
+
+    let font = FontRef::from_index(data, index).ok()?;
+    let axes = font.axes();
+    let coordinates = axes
+        .iter()
+        .enumerate()
+        .zip(normalized_coords)
+        .filter(|(_, target)| **target != 0)
+        .map(|((index, axis), &target)| {
+            let normalize = |value: f32| {
+                axes.location([(axis.tag(), value)])
+                    .coords()
+                    .get(index)
+                    .map_or(0, |coord| coord.to_bits())
+            };
+            let (mut low, mut high) = if target < 0 {
+                (axis.min_value(), axis.default_value())
+            } else {
+                (axis.default_value(), axis.max_value())
+            };
+            for _ in 0..24 {
+                let mid = (low + high) / 2.0;
+                if normalize(mid) < target {
+                    low = mid;
+                } else {
+                    high = mid;
+                }
+            }
+            Coordinate {
+                axis: u32::from_be_bytes(axis.tag().to_be_bytes()).into(),
+                value: (low + high) / 2.0,
+            }
+        })
+        .collect();
+    Some(coordinates)
 }
 
 fn lerp_f32(a: f32, b: f32, t: f32) -> f32 {
@@ -968,9 +1022,7 @@ mod sk_peniko {
             },
             None,
         );
-        let pixels = unsafe {
-            SkData::new_bytes(image_data.data.data()) // We have to ensure the src image data lives long enough
-        };
+        let pixels = SkData::new_with_owner(image_data.data.clone());
         let image =
             skia_safe::images::raster_from_data(&image_info, pixels, image_info.min_row_bytes())
                 .unwrap();
@@ -1364,5 +1416,47 @@ mod sk_kurbo {
             }
             PathEl::ClosePath => _ = sk_path.close(),
         };
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::design_coordinates;
+    use skrifa::{FontRef, MetadataProvider};
+
+    /// One `wght` axis from 100 to 900 whose default is 900 (as in Fraunces), with a non-linear
+    /// `avar` map (-0.5 -> -0.8). Generated with fontTools; no glyph variations.
+    const AVAR_TEST: &[u8] = include_bytes!("../tests/fonts/avar-test.ttf");
+
+    fn normalized(weight: f32) -> Vec<i16> {
+        let font = FontRef::new(AVAR_TEST).unwrap();
+        let location = font.axes().location([("wght", weight)]);
+        location
+            .coords()
+            .iter()
+            .map(|coord| coord.to_bits())
+            .collect()
+    }
+
+    #[test]
+    fn design_coordinates_invert_avar_below_the_default() {
+        for weight in [100.0, 300.0, 500.0, 700.0, 850.0] {
+            let coords = design_coordinates(AVAR_TEST, 0, &normalized(weight)).unwrap();
+            assert_eq!(coords.len(), 1);
+            assert!(
+                (coords[0].value - weight).abs() < 0.5,
+                "wght {weight} came back as {}",
+                coords[0].value
+            );
+        }
+    }
+
+    #[test]
+    fn design_coordinates_skip_axes_at_their_default() {
+        assert!(
+            design_coordinates(AVAR_TEST, 0, &normalized(900.0))
+                .unwrap()
+                .is_empty()
+        );
     }
 }
